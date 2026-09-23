@@ -1137,7 +1137,7 @@ def normalize_text(text):
         text
     )
 
-    return text.strip()
+    return repair_extracted_text(text).strip()
 
 
 # =========================================================
@@ -1227,11 +1227,8 @@ def detect_contact(text):
         )
     )
 
-    phone = bool(
-        re.search(
-            r"\b(?:\+91[\s-]?)?[6-9]\d{9}\b",
-            text
-        )
+    phone = bool(_generator_phone_candidates(text)) if "_generator_phone_candidates" in globals() else bool(
+        re.search(r"(?<!\d)(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)", text)
     )
 
     linkedin = (
@@ -1457,39 +1454,151 @@ def get_missing_keywords(
 # BULLET DETECTION
 # =========================================================
 
-BULLET_MARKERS = r"^[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*]+\s*"
+BULLET_MARKERS = r"^[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→]+\s*"
+
+# Common resume vocabulary used to repair PDF extraction artifacts such as
+# ``riskfactorsand`` / ``improvedataquality`` without inventing content.
+_RESUME_WORDS = set("""
+a an able about academic achievement achievements action actionable activities adaptable administrative analysis analytical analyze analyzed apply applying assessment assisted automation award awards bachelor background based business candidate campaigns certification certified client clients collaboration collaborative communication company completed computer conducted contribute contributed coordination core created creative credit customer customers dashboard dashboards data database databases decision decisions decision-making deliver delivered design developed development digital documentation education effective employee employees engineering enhanced ensure exploratory experience experienced finance financial framework frameworks frontend full-stack github goal goals graphic growth handled hands-on human improve improved improvements insights internship interviewed inventory java javascript job jupyter knowledge leadership learning linkedin machine management marketing mathematical metrics model models monitoring mysql numpy objective operations optimization organization outcomes pandas participation performance portfolio powerbi power point practical problem problems process professional profile programming project projects python quality quantitative recommendations records reporting research responsibilities results risk sales science scikit-learn sql statistics student summary supported support systems tableau tasks teamwork technical technology testing tools training ui ux using visualization web work worked workflow workflows
+action actioned built evaluated generated identified implemented leveraged maintained managed measured optimized prepared presented processed reduced reviewed solved tested trained wrote
+the and or of to in for with on from by as at into through using based customer customers delinquency credit risk factors assessment quality collection collections high low model models predictive logistic regression decision trees artificial intelligence ai assisted techniques framework prioritize prioritized executive reports report actionable insights
+graphic designer developer engineer analyst manager intern internship specialist executive coordinator administrator consultant
+""".lower().split())
+_RESUME_WORDS.update({x.lower() for x in FIELD_PROFILES.get("Data / Analytics", {}).get("skills", [])} if "FIELD_PROFILES" in globals() else set())
+
+
+def _deblend_token(token):
+    """Split a PDF token only when a high-confidence dictionary segmentation exists."""
+    raw = str(token or "")
+    m = re.match(r"^(.*?)([.,;:!?)]*)$", raw)
+    core = m.group(1) if m else raw
+    suffix = m.group(2) if m else ""
+    if "-" in core:
+        rebuilt = "-".join(_deblend_token(x) for x in core.split("-"))
+        return rebuilt + suffix if rebuilt != core else raw
+    if len(core) < 11 or not re.fullmatch(r"[A-Za-z]+", core):
+        return raw
+    low = core.lower()
+    if low in _RESUME_WORDS:
+        return raw
+    n = len(low)
+    best = [None] * (n + 1)
+    best[0] = []
+    for i in range(1, n + 1):
+        candidates = []
+        for j in range(max(0, i - 18), i):
+            part = low[j:i]
+            if len(part) < 2 or part not in _RESUME_WORDS or best[j] is None:
+                continue
+            candidates.append(best[j] + [part])
+        if candidates:
+            best[i] = min(candidates, key=lambda parts: (len(parts), -sum(len(x) for x in parts)))
+    parts = best[n]
+    if parts and len(parts) >= 2 and all(len(x) >= 2 for x in parts) and sum(len(x) for x in parts) == n:
+        return " ".join(parts) + suffix
+    return raw
+
+
+def repair_extracted_text(text):
+    """Repair spacing artifacts from PDF extraction while preserving source wording."""
+    if not text:
+        return ""
+    repaired_lines = []
+    for raw_line in str(text).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        # Keep URLs/e-mail addresses untouched.
+        pieces = []
+        for token in line.split(" "):
+            if "@" in token or "://" in token or token.startswith("www."):
+                pieces.append(token)
+            else:
+                pieces.append(_deblend_token(token))
+        line = " ".join(pieces)
+        # High-confidence phrase repairs seen in Word/PDF extraction.
+        phrase_repairs = {
+            "riskfactorsand": "risk factors and",
+            "improvedataquality": "improve data quality",
+            "riskassessmentusing": "risk assessment using",
+            "highriskcustomers": "high-risk customers",
+            "customerdata": "customer data",
+            "datadriven": "data-driven",
+            "executivereports": "executive reports",
+            "actionableinsights": "actionable insights",
+        }
+        for bad, good in phrase_repairs.items():
+            line = re.sub(rf"\b{re.escape(bad)}\b", good, line, flags=re.I)
+        line = re.sub(r"\bai-assisted\b", "AI-assisted", line, flags=re.I)
+        repaired_lines.append(line)
+    return "\n".join(repaired_lines)
+
 
 def clean_bullet_line(line):
-    line = line.strip()
+    line = repair_extracted_text(str(line or "").strip())
     original = line
-    line = re.sub(BULLET_MARKERS, "", line)
-    line = re.sub(r"^\(?\d+[\.)]\s*", "", line)
+    line = re.sub(BULLET_MARKERS, "", line).strip()
+    line = re.sub(r"^\(?\d+[\.)]\s*", "", line).strip()
+    line = re.sub(r"\s+", " ", line)
     return line.strip(), original != line
 
 
-def get_bullet_points(text):
-    bullets = []
-    for line in text.splitlines():
-        cleaned, changed = clean_bullet_line(line)
-        if changed and len(cleaned.split()) >= 4:
-            bullets.append(cleaned)
+def _is_bullet_continuation(previous, current):
+    """Detect a wrapped bullet continuation without joining separate bullets."""
+    if not previous or not current:
+        return False
+    p = previous.strip()
+    c = current.strip()
+    if not c or c[:1].isupper() or re.match(r"^[A-Z][a-z]+\b", c):
+        return False
+    if re.match(r"^(and|or|but|to|for|with|using|through|by|into|from|which|that|who|where|while|including|such|as)\b", c, re.I):
+        return True
+    # A lowercase line immediately following a bullet is overwhelmingly a
+    # PDF line-wrap continuation, especially when the previous line is short.
+    return c[:1].islower() and len(p.split()) >= 2
 
-    # Secondary detection: extraction engines sometimes preserve the bullet
-    # symbol as a private-use glyph or lose it while keeping strong verb starts.
-    if len(bullets) < 3:
-        for line in text.splitlines():
-            clean = line.strip()
-            if not clean or clean.startswith("•"):
-                continue
-            words = clean.split()
-            if words and words[0].lower().rstrip(":") in ACTION_VERBS and len(words) >= 6:
-                bullets.append(clean)
+
+def get_bullet_points(text):
+    """Reconstruct bullets from messy PDFs, including wrapped/mis-decoded bullets."""
+    lines = [repair_extracted_text(x).strip() for x in str(text or "").splitlines() if repair_extracted_text(x).strip()]
+    bullets = []
+    current = None
+    for raw in lines:
+        clean, marked = clean_bullet_line(raw)
+        if not clean or len(clean.split()) < 2:
+            continue
+        starts_bullet = marked or bool(re.match(BULLET_MARKERS, raw.strip())) or bool(re.match(r"^\(?\d+[\.)]\s*", raw.strip()))
+        lowercase_continuation = bool(clean[:1].islower())
+        if starts_bullet and current and lowercase_continuation:
+            # PDF extractors often put a bullet glyph on every wrapped visual
+            # line. A lowercase continuation belongs to the same bullet.
+            current = current.rstrip(" •") + " " + clean.lstrip("• ")
+        elif starts_bullet:
+            if current:
+                bullets.append(current.strip())
+            current = clean
+        elif current and _is_bullet_continuation(current, clean):
+            current = current.rstrip(" ") + " " + clean
+        elif current and not _looks_like_heading(clean) and clean[:1].islower():
+            current = current.rstrip(" ") + " " + clean
+        else:
+            if current:
+                bullets.append(current.strip())
+                current = None
+            first = clean.split()[0].lower().rstrip(":") if clean.split() else ""
+            if first in ACTION_VERBS and len(clean.split()) >= 6:
+                current = clean
+    if current:
+        bullets.append(current.strip())
 
     unique = []
     seen = set()
     for bullet in bullets:
-        key = re.sub(r"\s+", " ", bullet.lower()).strip()
-        if key not in seen:
+        bullet = repair_extracted_text(bullet)
+        bullet = re.sub(r"[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→]+", " ", bullet)
+        bullet = re.sub(r"\s+", " ", bullet).strip(" .") + "."
+        key = bullet.lower()
+        if len(bullet.split()) >= 5 and key not in seen:
             seen.add(key)
             unique.append(bullet)
     return unique
@@ -1690,17 +1799,14 @@ def calculate_ats_score(
     )
 
     if jd_skills:
-
-        jd_score = round(
-            (
-                len(matching_skills)
-                / len(jd_skills)
-            ) * 25
-        )
-
+        jd_score = round((len(matching_skills) / len(jd_skills)) * 25)
+        jd_applicable = True
     else:
-
-        jd_score = 25
+        # No JD means there is no defensible job-alignment score.
+        # Keep the overall ATS score comparable by normalizing only the
+        # resume-structure components that are actually measurable.
+        jd_score = 0
+        jd_applicable = False
 
     section_count = sum(
         1
@@ -1741,19 +1847,11 @@ def calculate_ats_score(
         len(achievements) * 2
     )
 
-    total = (
-        technical_score
-        + jd_score
-        + section_score
-        + contact_score
-        + project_exp_score
-        + achievement_score
-    )
+    total = technical_score + jd_score + section_score + contact_score + project_exp_score + achievement_score
+    applicable_max = 100 if jd_applicable else 75
+    normalized_total = round((total / applicable_max) * 100) if applicable_max else 0
 
-    return min(
-        100,
-        total
-    ), {
+    return min(100, normalized_total), {
 
         "Technical Skills":
             technical_score,
@@ -2386,18 +2484,47 @@ def _horizontal_score_chart(title,rows,width=520):
     return d
 
 def _report_table(rows,widths,header=True,zebra=True):
-    table=Table(rows,colWidths=widths,repeatRows=1 if header else 0,hAlign="LEFT",splitByRow=1)
-    style=[("VALIGN",(0,0),(-1,-1),"TOP"),("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),8.2),("LEADING",(0,0),(-1,-1),10.5),("LEFTPADDING",(0,0),(-1,-1),7),("RIGHTPADDING",(0,0),(-1,-1),7),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),("LINEBELOW",(0,0),(-1,-1),.35,colors.HexColor("#D9E0E8"))]
+    """Wrap every report-table cell so long text never blends or overflows."""
+    cell_head=ParagraphStyle("ReportTableHeadV4",fontName="Helvetica-Bold",fontSize=8.1,leading=10.2,textColor=colors.white)
+    cell_body=ParagraphStyle("ReportTableBodyV4",fontName="Helvetica",fontSize=8.6,leading=12.2,textColor=colors.HexColor("#344054"),wordWrap="CJK",splitLongWords=1)
+    safe_rows=[]
+    for r_idx,row in enumerate(rows or []):
+        converted=[]
+        for cell in row:
+            if isinstance(cell,Paragraph):
+                converted.append(cell)
+            else:
+                txt=_safe_pdf_text(cell)
+                converted.append(Paragraph(txt or "", cell_head if header and r_idx==0 else cell_body))
+        safe_rows.append(converted)
+    table=Table(safe_rows,colWidths=widths,repeatRows=1 if header else 0,hAlign="LEFT",splitByRow=1)
+    style=[("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),7),("RIGHTPADDING",(0,0),(-1,-1),7),("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),("LINEBELOW",(0,0),(-1,-1),.35,colors.HexColor("#D9E0E8"))]
     start=1 if header else 0
-    if header: style += [("BACKGROUND",(0,0),(-1,0),colors.HexColor("#24324A")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold")]
+    if header:
+        style += [("BACKGROUND",(0,0),(-1,0),colors.HexColor("#24324A")),("TEXTCOLOR",(0,0),(-1,0),colors.white)]
     if zebra:
-        for r in range(start,len(rows),2): style.append(("BACKGROUND",(0,r),(-1,r),colors.HexColor("#F8FAFC")))
+        for r in range(start,len(safe_rows),2):
+            style.append(("BACKGROUND",(0,r),(-1,r),colors.HexColor("#F8FAFC")))
     table.setStyle(TableStyle(style)); return table
+
 
 def _report_callout(title,text,fill="#F4F3FF",accent="#635BDB"):
     hd=ParagraphStyle("ReportCalloutHead",fontName="Helvetica-Bold",fontSize=9.2,leading=11,textColor=colors.HexColor(accent),spaceAfter=2)
     tx=ParagraphStyle("ReportCalloutText",fontName="Helvetica",fontSize=8.6,leading=12,textColor=colors.HexColor("#344054"))
     return Table([[Paragraph(_safe_pdf_text(title),hd)],[Paragraph(_safe_pdf_text(text),tx)]],colWidths=[6.85*inch],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor(fill)),("BOX",(0,0),(-1,-1),.7,colors.HexColor(accent)),("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),("TOPPADDING",(0,0),(-1,0),7),("BOTTOMPADDING",(0,0),(-1,0),1),("TOPPADDING",(0,1),(-1,1),1),("BOTTOMPADDING",(0,1),(-1,1),7)]))
+
+def _report_clean_text(value):
+    """Clean PDF-extracted spacing artifacts without changing the underlying wording."""
+    text = _safe_pdf_text(value or "")
+    # Repair common PDF/Word extraction artifacts such as:
+    # "AppliedSQLqueriesand Pythonscriptstoextract" -> readable text.
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    text = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", text)
+    text = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", text)
+    text = re.sub(r"([a-z]{2,})(?=(and|or|to|for|with|from|using|on|in|of|the|a|an)\b)", r"\1 ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 
 def generate_analysis_report(data):
     buffer=BytesIO()
@@ -2416,7 +2543,7 @@ def generate_analysis_report(data):
     story.append(PageBreak()); story += [Paragraph("ATS & JOB ALIGNMENT",title),Paragraph("A focused view of how the resume maps to the target role and its requirements.",subtitle)]
     breakdown=data.get("ats_breakdown",{}) or {}
     if breakdown:
-        mx={"Skills & Role Relevance":25,"ATS Structure":18,"Contact Information":10,"Projects / Experience":15,"Achievements":10,"Bullet Quality":7,"Readability":5,"Content Density":10}; br=[(k,v,mx.get(k,max(1,v))) for k,v in breakdown.items()]; story += [Paragraph("ATS Category Performance",h),Paragraph("Each category shows points earned against its maximum. The eight category maximums total 100 points.",small),_horizontal_score_chart("Points earned against each ATS category",br),Spacer(1,8)]
+        mx={"Technical Skills":25,"JD Match":25,"Resume Sections":20,"Contact":10,"Projects / Experience":10,"Achievements":10}; br=[(k,v,mx.get(k,max(1,v))) for k,v in breakdown.items()]; story += [Paragraph("ATS Category Performance",h),_horizontal_score_chart("Points earned against each ATS category",br),Spacer(1,8)]
     if data.get("jd_skills"):
         story += [Paragraph("Technical Skill Alignment",h),_report_table([["Job-match area","Details"],["JD technical skills",str(len(data.get("jd_skills",[])))],["Matching skills",_safe_pdf_text(", ".join(data.get("matching_skills",[])) or "None")],["Missing skills",_safe_pdf_text(", ".join(data.get("missing_skills",[])) or "None")]], [1.75*inch,5.1*inch]),Spacer(1,8)]
         story += [Paragraph("Job Description Keyword Coverage",h),_report_table([["Keyword group","Terms"],["Present",_safe_pdf_text(", ".join(data.get("matching_keywords",[])) or "None")],["Missing",_safe_pdf_text(", ".join(data.get("missing_keywords",[])) or "None")]], [1.25*inch,5.6*inch])]
@@ -2437,10 +2564,20 @@ def generate_analysis_report(data):
     bullets=data.get("bullets",[]) or []; bs=data.get("bullet_suggestions",[]) or []
     if bullets:
         ex=[["Original resume bullet","Suggested direction"]]
-        for i,b in enumerate(bullets[:7]):
+        for i,b in enumerate(bullets[:5]):
             x=bs[i] if i<len(bs) else ""; x=x.get("Suggested") or x.get("suggested") or x.get("Improved") or "" if isinstance(x,dict) else str(x)
-            ex.append([_safe_pdf_text(b),_safe_pdf_text(x) or "Strengthen with action + task + evidence."])
-        story += [Spacer(1,8),Paragraph("Content-Level Examples",h),_report_table(ex,[3.35*inch,3.5*inch])]
+            ex.append([_report_clean_text(b),_report_clean_text(x) or "Strengthen with action + task + evidence."])
+        # Give content-level examples more breathing room so extracted text
+        # never appears visually glued together in the final report.
+        ex_table = _report_table(ex,[3.20*inch,3.65*inch])
+        ex_table.setStyle(TableStyle([
+            ("LEFTPADDING",(0,0),(-1,-1),10),
+            ("RIGHTPADDING",(0,0),(-1,-1),10),
+            ("TOPPADDING",(0,0),(-1,-1),11),
+            ("BOTTOMPADDING",(0,0),(-1,-1),11),
+            ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ]))
+        story += [Spacer(1,8),Paragraph("Content-Level Examples",h),ex_table]
     ats=float(data.get("ats_score",0) or 0); quality=float(data.get("quality_score",0) or 0); nlpv=float(data.get("nlp_score",0) or 0)
     assessment="The analysis indicates a solid resume foundation. Focus on the specific gaps shown above, especially measurable impact and role-specific terminology." if min(ats,quality,nlpv)>=60 else "The analysis identifies several areas that can be strengthened. Prioritize the highest-impact recommendations and re-run the analysis after evidence-based edits."
     story += [Spacer(1,8),Paragraph("Overall Analysis",h),_report_callout("Interpretation",assessment),Spacer(1,10),Paragraph("Scores are analytical indicators based on the uploaded resume and optional job description; they are not guarantees of hiring outcomes.",small)]
@@ -2509,24 +2646,40 @@ FIELD_PROFILES = {
 
 
 def extract_resume_sections(text):
+    """Extract sections while tolerating decorated headings and PDF line-wraps."""
     aliases = {
         "profile / summary": "Summary", "profile": "Summary", "summary": "Summary", "professional summary": "Summary",
-        "education": "Education", "experience": "Experience", "work experience": "Experience", "internship": "Experience",
-        "technical skills": "Skills", "skills": "Skills", "core skills": "Skills",
-        "projects": "Projects", "project": "Projects", "certifications": "Certifications", "certification": "Certifications",
+        "objective": "Summary", "education": "Education", "academic background": "Education",
+        "experience": "Experience", "work experience": "Experience", "professional experience": "Experience", "internship": "Experience",
+        "technical skills": "Skills", "skills": "Skills", "core skills": "Skills", "skills & tools": "Skills", "technical stack": "Skills",
+        "projects": "Projects", "project": "Projects", "key projects": "Projects",
+        "certifications": "Certifications", "certification": "Certifications", "certificates": "Certifications",
         "achievements": "Achievements", "achievement": "Achievements", "awards": "Achievements", "honors": "Achievements"
     }
     sections = {}
     current = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        key = line.lower().strip(":- ")
+    for raw in repair_extracted_text(text).splitlines():
+        line = re.sub(r"^[|\s]+|[|\s]+$", "", raw).strip()
+        if not line:
+            continue
+        key = re.sub(r"[^a-z0-9/& ]", "", line.lower()).strip()
+        key = re.sub(r"\s+", " ", key)
         if key in aliases:
             current = aliases[key]
             sections.setdefault(current, [])
             continue
-        if current and line:
-            sections[current].append(line)
+        if current:
+            sections.setdefault(current, []).append(line)
+
+    # Remove obvious table artifacts while preserving real content.
+    for section, items in list(sections.items()):
+        cleaned = []
+        for item in items:
+            item = re.sub(r"\s+", " ", item).strip("| ")
+            if not item or re.fullmatch(r"[-_=|]+", item):
+                continue
+            cleaned.append(item)
+        sections[section] = cleaned
     return sections
 
 
@@ -2651,37 +2804,135 @@ def infer_resume_field(resume_text, resume_skills):
 def infer_target_role(resume_text, field, resume_skills):
     return infer_role_from_text(resume_text, field)
 
+def _generator_phone_candidates(text):
+    """Return readable phone candidates from common international/Indian formats."""
+    raw = str(text or "")
+    patterns = [
+        r"(?<!\d)(?:\+91[\s-]?)?(?:[6-9]\d{4}[\s-]?\d{5})(?!\d)",
+        r"(?<!\d)\+91[\s-]?(?:[6-9]\d{4}[\s-]?\d{5})(?!\d)",
+    ]
+    found=[]
+    for pattern in patterns:
+        for m in re.finditer(pattern, raw):
+            value=re.sub(r"\s+", " ", m.group(0)).strip(" -")
+            digits=re.sub(r"\D", "", value)
+            if digits.startswith("91") and len(digits)==12:
+                value="+91 " + digits[-10:-5] + " " + digits[-5:]
+            elif len(digits)==10:
+                value=digits[:5] + " " + digits[5:]
+            if value not in found:
+                found.append(value)
+    return found[:1]
+
+
+def _generator_clean_items(items, bullet_mode=False):
+    """Clean extracted section lines without adding unsupported facts."""
+    raw_items=[repair_extracted_text(str(x)).strip() for x in (items or []) if str(x).strip()]
+    if bullet_mode and raw_items:
+        reconstructed=get_bullet_points("\n".join(raw_items))
+        if reconstructed:
+            return reconstructed[:14]
+    out=[]
+    for item in raw_items:
+        clean,_=clean_bullet_line(item)
+        clean=re.sub(r"\s+", " ", clean).strip()
+        if len(clean)<2:
+            continue
+        if bullet_mode:
+            clean=rewrite_bullet_professionally(clean).rstrip(" .") + "."
+        if clean.lower() not in {x.lower() for x in out}:
+            out.append(clean)
+    return out[:14]
+
+
+def _generator_verified_skills(data, field):
+    """Use only skills actually detected in the uploaded resume."""
+    source=[str(x).strip() for x in (data.get("resume_skills",[]) or []) if str(x).strip()]
+    profile=[str(x).strip() for x in FIELD_PROFILES.get(field,{}).get("skills",[]) if str(x).strip()]
+    source_map={x.lower():x for x in source}
+    selected=[source_map[x.lower()] for x in profile if x.lower() in source_map]
+    # Preserve detected skills not listed in the field profile rather than
+    # inventing or silently deleting genuine user skills.
+    selected += [x for x in source if x.lower() not in {s.lower() for s in selected}]
+    return selected[:20]
+
+
+def _generator_summary(resume_skills, role, field, education=None, source_summary=None):
+    """Create one concise, evidence-safe summary for the selected role/field."""
+    skills=[str(x) for x in (resume_skills or []) if str(x).strip()][:8]
+    skill_text=", ".join(skills) if skills else "practical project and technical skills"
+    edu=" ".join(str(x) for x in (education or []))
+    is_student=bool(re.search(r"\b(student|bca|b\.\s?tech|btech|mca|mba|undergraduate|degree)\b",edu,re.I))
+    role=(role or "Professional").strip()
+    fl=(field or "Other / Custom").lower()
+    if "data" in fl or "analytics" in fl:
+        focus="data analysis, data preparation, exploratory analysis, visualization, and reporting"
+    elif "software" in fl or "it" in fl:
+        focus="software development, programming, debugging, and practical technical solutions"
+    elif "business" in fl or "finance" in fl:
+        focus="business analysis, reporting, process understanding, and evidence-based decision support"
+    elif "marketing" in fl or "sales" in fl:
+        focus="campaigns, customer engagement, market research, content, and performance analysis"
+    elif "design" in fl or "creative" in fl:
+        focus="visual communication, digital content, design execution, and creative problem solving"
+    elif "hr" in fl or "administration" in fl:
+        focus="coordination, documentation, communication, and people-focused operational support"
+    else:
+        focus="practical projects, structured problem solving, communication, and continuous learning"
+    opening=("Student and aspiring " if is_student else "Candidate targeting ")
+    return (f"{opening}{role} with hands-on exposure to {skill_text}. "
+            f"Focused on {focus} and applying verified skills from the uploaded resume to practical work. "
+            f"Seeking a {role} opportunity to contribute effectively and continue developing professionally.")
+
+
 def build_template_resume_data(data, field, target_role):
-    profile = FIELD_PROFILES[field]
-    sections = extract_resume_sections(data.get("resume_text", ""))
-    skills = data.get("resume_skills", [])
+    text=repair_extracted_text(data.get("resume_text", ""))
+    sections=extract_resume_sections(text)
+    skills=_generator_verified_skills(data, field)
+    role=(target_role or "").strip() or data.get("detected_role") or FIELD_PROFILES.get(field,FIELD_PROFILES["Other / Custom"])["roles"][0]
 
-    preferred = [s for s in profile["skills"] if s in skills]
-    if not preferred:
-        preferred = skills[:10]
+    # Keep source sections intact, but rebuild experience/projects as clean,
+    # wrapped bullets so PDF extraction artifacts cannot create fragments.
+    education=_generator_clean_items(sections.get("Education",[]),False)
+    # Education fallback: some Word/Canva PDFs lose the "Education" heading
+    # during extraction. Recover clearly identifiable academic lines from the
+    # source text so the generator never silently drops the Education section.
+    if not education:
+        edu_lines=[]
+        for raw_line in text.splitlines():
+            line=re.sub(r"\s+", " ", raw_line).strip(" |•\t")
+            if not line or len(line)<3:
+                continue
+            if re.search(r"\b(?:university|college|institute|school|academy)\b", line, re.I) or re.search(r"\b(?:bca|b\.\s?tech|btech|mca|mba|bba|bcom|ba|ma|msc|m\.\s?tech|degree|diploma|bachelor|master|higher secondary|senior secondary|12th|10th)\b", line, re.I):
+                if not re.search(r"@|https?://|linkedin|github", line, re.I):
+                    edu_lines.append(line)
+        education=_generator_clean_items(edu_lines[:8],False)
+    experience=_generator_clean_items(sections.get("Experience",[]),True)
+    projects=_generator_clean_items(sections.get("Projects",[]),True)
+    certifications=_generator_clean_items(sections.get("Certifications",[]),False)
+    achievements=_generator_clean_items(sections.get("Achievements",[]),True)
 
-    role = target_role.strip() if target_role.strip() else profile["roles"][0]
-    summary = generate_summary(
-        preferred if preferred else skills[:10],
-        role,
-        field
-    )
+    existing_summary=" ".join(_generator_clean_items(sections.get("Summary",[]),False)).strip()
+    summary=_generator_summary(skills,role,field,education,existing_summary)
 
+    email=re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",text)[:1]
+    linkedin=re.findall(r"(?:https?://)?(?:www\.)?linkedin\.com/[A-Za-z0-9_./-]+",text,re.I)[:1]
+    github=re.findall(r"(?:https?://)?(?:www\.)?github\.com/[A-Za-z0-9_./-]+",text,re.I)[:1]
     return {
-        "name": data.get("candidate_name") or extract_candidate_name(data.get("resume_text", "")),
-        "email": re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", data.get("resume_text", ""))[:1],
-        "phone": re.findall(r"(?:\+91[\s-]?)?[6-9]\d{9}", data.get("resume_text", ""))[:1],
-        "linkedin": re.findall(r"https?://(?:www\.)?linkedin\.com/[^\s]+", data.get("resume_text", ""), re.I)[:1],
-        "github": re.findall(r"https?://(?:www\.)?github\.com/[^\s]+", data.get("resume_text", ""), re.I)[:1],
+        "name": data.get("candidate_name") or extract_candidate_name(text),
+        "email": email,
+        "phone": _generator_phone_candidates(text),
+        "linkedin": linkedin,
+        "github": github,
         "role": role,
         "summary": summary,
-        "skills": preferred,
-        "education": sections.get("Education", []),
-        "experience": sections.get("Experience", []),
-        "projects": sections.get("Projects", []),
-        "certifications": sections.get("Certifications", []),
-        "achievements": sections.get("Achievements", []),
-        "section_order": profile["section_order"],
+        "skills": skills,
+        "education": education,
+        "experience": experience,
+        "projects": projects,
+        "certifications": certifications,
+        "achievements": achievements,
+        "section_order": FIELD_PROFILES.get(field,FIELD_PROFILES["Other / Custom"])["section_order"],
         "field": field,
     }
 
@@ -2765,10 +3016,10 @@ def generate_resume_pdf(resume,template_name,variant=None):
     buffer=BytesIO(); variant=random.randint(1,5) if variant is None else variant
     doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=30,leftMargin=30,topMargin=26,bottomMargin=24,title=f"{resume.get('name','Candidate')} Resume",author="AI Resume Analyzer")
     base=getSampleStyleSheet(); palettes={
-        "ATS Professional":("#24324A","#4F46E5","#EEF2FF"),"Data Analyst Pro":("#0B6E99","#12A4D9","#E8F7FC"),"Modern Sidebar":("#3347B0","#6675E8","#EEF0FF"),"Executive Minimal":("#252A34","#5C677D","#F2F4F7"),"Creative Modern":("#7C3AED","#EC4899","#F7EEFF"),"Academic Pro":("#1D4ED8","#2563EB","#EFF6FF"),"Tech Compact":("#087F5B","#20A36A","#EAF8F2"),"Portfolio Accent":("#B45309","#F59E0B","#FFF7E6"),"Editorial Luxe":("#8B1E3F","#C23B68","#FFF0F4"),"Minimal Mono":("#111827","#4B5563","#F3F4F6"),"Corporate Grid":("#4338CA","#6366F1","#EEF2FF"),"Creative Portfolio":("#BE185D","#EC4899","#FCE7F3"),"Swiss Modern":("#0F172A","#475569","#F1F5F9"),"Nordic Executive":("#155E75","#0891B2","#ECFEFF"),"Tech Aurora":("#115E59","#14B8A6","#E8FFFB"),"Finance Elite":("#1E3A5F","#B38B2E","#FBF7EA"),"Creative Studio":("#5B21B6","#F97316","#FFF1E8"),"OnePage Classic":("#1F2937","#374151","#F8FAFC")}
+        "ATS Professional":("#24324A","#4F46E5","#EEF2FF"),"Data Analyst Pro":("#0B6E99","#12A4D9","#E8F7FC"),"Modern Sidebar":("#3347B0","#6675E8","#EEF0FF"),"Executive Minimal":("#252A34","#5C677D","#F2F4F7"),"Creative Modern":("#7C3AED","#EC4899","#F7EEFF"),"Academic Pro":("#1D4ED8","#2563EB","#EFF6FF"),"Tech Compact":("#087F5B","#20A36A","#EAF8F2"),"Portfolio Accent":("#B45309","#F59E0B","#FFF7E6"),"Editorial Luxe":("#8B1E3F","#C23B68","#FFF0F4"),"Minimal Mono":("#111827","#4B5563","#F3F4F6"),"Corporate Grid":("#4338CA","#6366F1","#EEF2FF"),"Creative Portfolio":("#BE185D","#EC4899","#FCE7F3"),"Swiss Modern":("#0F172A","#475569","#F1F5F9"),"Nordic Executive":("#155E75","#0891B2","#ECFEFF"),"Tech Aurora":("#115E59","#14B8A6","#E8FFFB"),"Finance Elite":("#1E3A5F","#B38B2E","#FBF7EA"),"Creative Studio":("#5B21B6","#F97316","#FFF1E8"),"OnePage Classic":("#1F2937","#374151","#F8FAFC"),"Canva Editorial":("#7C2D12","#EA580C","#FFF7ED"),"Apex Modern":("#0F766E","#14B8A6","#ECFEFF"),"Glass Grid":("#3730A3","#818CF8","#EEF2FF"),"Studio Split":("#9D174D","#F472B6","#FDF2F8")}
     ah,bh,sh=palettes.get(template_name,palettes["ATS Professional"]); accent=colors.HexColor(ah); accent2=colors.HexColor(bh); soft=colors.HexColor(sh); dark=colors.HexColor("#111827"); body=colors.HexColor("#344054"); muted=colors.HexColor("#667085")
-    ns={1:24,2:22,3:25,4:21,5:23}.get(variant,23); bs={1:8.45,2:8.25,3:8.15,4:8.05,5:8.25}.get(variant,8.25); name=str(resume.get("name","Candidate")); ns-=2 if len(name)>25 else 0
-    styles={"name":ParagraphStyle("RN",fontName="Helvetica-Bold",fontSize=ns,leading=ns+2,textColor=dark,spaceAfter=1,keepWithNext=True),"role":ParagraphStyle("RR",fontName="Helvetica-Bold",fontSize=9.6,leading=11,textColor=accent,spaceAfter=2,keepWithNext=True),"contact":ParagraphStyle("RC",fontName="Helvetica",fontSize=7.2,leading=8.8,textColor=muted,spaceAfter=3,keepWithNext=True),"section":ParagraphStyle("RSec",fontName="Helvetica-Bold",fontSize=9.7,leading=11.7,textColor=accent,spaceBefore=6.5,spaceAfter=3.2,keepWithNext=True),"body":ParagraphStyle("RB",fontName="Helvetica",fontSize=bs,leading=bs+2.25,textColor=body,spaceAfter=2.7,splitLongWords=1),"bullet":ParagraphStyle("RBu",fontName="Helvetica",fontSize=bs,leading=bs+2.15,leftIndent=10,firstLineIndent=-6,textColor=body,spaceAfter=2.5,splitLongWords=1),"small":ParagraphStyle("RSm",fontName="Helvetica",fontSize=7.1,leading=8.6,textColor=muted),"chip":ParagraphStyle("RChip",fontName="Helvetica-Bold",fontSize=6.7,leading=8,textColor=colors.HexColor("#334155"),alignment=TA_CENTER,splitLongWords=1)}
+    ns={1:24,2:22,3:25,4:21,5:23}.get(variant,23); bs={1:8.95,2:8.8,3:8.7,4:8.6,5:8.8}.get(variant,8.8); name=str(resume.get("name","Candidate")); ns-=2 if len(name)>25 else 0
+    styles={"name":ParagraphStyle("RN",fontName="Helvetica-Bold",fontSize=ns,leading=ns+3.5,textColor=dark,spaceAfter=5,keepWithNext=True),"role":ParagraphStyle("RR",fontName="Helvetica-Bold",fontSize=9.6,leading=12.5,textColor=accent,spaceBefore=1.5,spaceAfter=3,keepWithNext=True),"contact":ParagraphStyle("RC",fontName="Helvetica",fontSize=7.6,leading=10.2,textColor=muted,spaceAfter=5,keepWithNext=True),"section":ParagraphStyle("RSec",fontName="Helvetica-Bold",fontSize=10.0,leading=12.5,textColor=accent,spaceBefore=7,spaceAfter=4,keepWithNext=True),"body":ParagraphStyle("RB",fontName="Helvetica",fontSize=bs,leading=bs+2.65,textColor=body,spaceAfter=3.2,splitLongWords=1),"bullet":ParagraphStyle("RBu",fontName="Helvetica",fontSize=bs,leading=bs+2.75,leftIndent=11,firstLineIndent=-7,textColor=body,spaceAfter=3.0,splitLongWords=1),"small":ParagraphStyle("RSm",fontName="Helvetica",fontSize=7.1,leading=8.6,textColor=muted),"chip":ParagraphStyle("RChip",fontName="Helvetica-Bold",fontSize=6.7,leading=8,textColor=colors.HexColor("#334155"),alignment=TA_CENTER,splitLongWords=1)}
     def para(x,sty): return Paragraph(_safe_pdf_text(str(x or "").strip()) or " ",sty)
     def bar(t):
         if template_name in {"Creative Modern","Creative Portfolio","Creative Studio","Portfolio Accent"} or variant==3: return Table([[Paragraph(_safe_pdf_text(t.upper()),styles["section"]),""]],colWidths=[6.15*inch,.7*inch],style=TableStyle([("BACKGROUND",(0,0),(0,0),soft),("BACKGROUND",(1,0),(1,0),accent),("LEFTPADDING",(0,0),(0,0),6),("TOPPADDING",(0,0),(-1,-1),1.5),("BOTTOMPADDING",(0,0),(-1,-1),1.5)]))
@@ -2785,36 +3036,43 @@ def generate_resume_pdf(resume,template_name,variant=None):
         story += [Table([[[para(name,styles["name"]),para(role,styles["role"])] ,para(field,styles["small"])]],colWidths=[5.15*inch,1.7*inch],style=TableStyle([("BACKGROUND",(1,0),(1,0),soft),("BOX",(1,0),(1,0),.65,accent),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("LEFTPADDING",(1,0),(1,0),7),("RIGHTPADDING",(1,0),(1,0),7),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)])),para("  •  ".join(contacts),styles["contact"]) if contacts else Spacer(1,1),rule()]
     if template_name in {"Data Analyst Pro","Tech Compact","Tech Aurora","Corporate Grid","Finance Elite","Nordic Executive"} or variant in {2,5}: story.append(Table([[para(f"FOCUS  •  {field}  •  {role}",styles["small"])]],colWidths=[6.85*inch],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),soft),("BOX",(0,0),(-1,-1),.55,accent2),("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)])))
     def add_section(t,items,bullets=True):
-        items=[str(x).strip() for x in (items or []) if str(x).strip()]
+        items=[repair_extracted_text(str(x)).strip() for x in (items or []) if str(x).strip()]
         if not items:return
         story.append(bar(t))
         for item in items:
-            clean,changed=clean_bullet_line(item); isb=bullets and (changed or item.startswith(("•","-","–","—")))
-            story.append(Paragraph(("• "+_safe_pdf_text(rewrite_bullet_professionally(clean))) if isb else _safe_pdf_text(clean),styles["bullet"] if isb else styles["body"]))
+            clean,_=clean_bullet_line(item)
+            clean=re.sub(r"\s+", " ", clean).strip()
+            if not clean: continue
+            if bullets:
+                clean=rewrite_bullet_professionally(clean).rstrip(" .") + "."
+                story.append(Paragraph("• " + _safe_pdf_text(clean),styles["bullet"]))
+            else:
+                story.append(Paragraph(_safe_pdf_text(clean),styles["body"]))
+        story.append(Spacer(1,5.5))
+
     def add_skills(t="SKILLS & TOOLS"):
         skills=[str(x).strip() for x in sec["Skills"] if str(x).strip()][:20]
         if not skills:return
         story.append(bar(t)); rows=[]; row=[]
         for skill in skills:
-            row.append(Table([[Paragraph(_safe_pdf_text(skill),styles["chip"])]],colWidths=[1.62*inch],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),soft),("BOX",(0,0),(-1,-1),.45,colors.HexColor("#CBD5E1")),("TOPPADDING",(0,0),(-1,-1),2.5),("BOTTOMPADDING",(0,0),(-1,-1),2.5)])))
+            row.append(Table([[Paragraph(_safe_pdf_text(skill),styles["chip"])]],colWidths=[1.62*inch],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),soft),("BOX",(0,0),(-1,-1),.45,colors.HexColor("#CBD5E1")),("TOPPADDING",(0,0),(-1,-1),3.5),("BOTTOMPADDING",(0,0),(-1,-1),3.5)])))
             if len(row)==4:rows.append(row);row=[]
         if row:
             while len(row)<4: row.append("")
             rows.append(row)
         story.append(Table(rows,colWidths=[1.70*inch]*4,style=TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),1.5),("RIGHTPADDING",(0,0),(-1,-1),1.5),("TOPPADDING",(0,0),(-1,-1),1.5),("BOTTOMPADDING",(0,0),(-1,-1),1.5)])))
-    if template_name=="Academic Pro": add_section("Professional Summary",sec["Summary"],False);add_section("Education",sec["Education"]);add_section("Projects",sec["Projects"]);add_skills("Technical Skills");add_section("Experience",sec["Experience"]);add_section("Certifications",sec["Certifications"]);add_section("Achievements",sec["Achievements"])
-    elif template_name in {"Tech Compact","Tech Aurora"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Technical Stack");add_section("Experience",sec["Experience"]);add_section("Projects",sec["Projects"]);add_section("Education",sec["Education"]);add_section("Certifications",sec["Certifications"]);add_section("Achievements",sec["Achievements"])
-    elif template_name in {"Finance Elite","Corporate Grid","Executive Minimal","Nordic Executive"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Core Competencies");add_section("Experience",sec["Experience"]);add_section("Projects",sec["Projects"]);add_section("Education",sec["Education"]);add_section("Certifications",sec["Certifications"]);add_section("Achievements",sec["Achievements"])
-    elif template_name in {"Creative Modern","Creative Portfolio","Creative Studio","Portfolio Accent","Editorial Luxe"}: add_section("Profile",sec["Summary"],False);add_skills("Skills & Tools");add_section("Projects",sec["Projects"]);add_section("Experience",sec["Experience"]);add_section("Education",sec["Education"]);add_section("Certifications",sec["Certifications"]);add_section("Achievements",sec["Achievements"])
+    if template_name=="Academic Pro": add_section("Professional Summary",sec["Summary"],False);add_section("Education",sec["Education"],False);add_section("Projects",sec["Projects"]);add_skills("Technical Skills");add_section("Experience",sec["Experience"]);add_section("Certifications",sec["Certifications"],False);add_section("Achievements",sec["Achievements"])
+    elif template_name in {"Tech Compact","Tech Aurora"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Technical Stack");add_section("Experience",sec["Experience"]);add_section("Projects",sec["Projects"]);add_section("Education",sec["Education"],False);add_section("Certifications",sec["Certifications"],False);add_section("Achievements",sec["Achievements"])
+    elif template_name in {"Finance Elite","Corporate Grid","Executive Minimal","Nordic Executive"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Core Competencies");add_section("Experience",sec["Experience"]);add_section("Projects",sec["Projects"]);add_section("Education",sec["Education"],False);add_section("Certifications",sec["Certifications"],False);add_section("Achievements",sec["Achievements"])
+    elif template_name in {"Creative Modern","Creative Portfolio","Creative Studio","Portfolio Accent","Editorial Luxe"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Skills & Tools");add_section("Projects",sec["Projects"]);add_section("Experience",sec["Experience"]);add_section("Education",sec["Education"],False);add_section("Certifications",sec["Certifications"],False);add_section("Achievements",sec["Achievements"])
     else:
         add_section("Professional Summary",sec["Summary"],False)
-        for t in resume.get("section_order",["Skills","Experience","Projects","Education","Certifications","Achievements"]):
-            if t == "Summary":
-                continue
-            add_skills("Skills & Tools") if t=="Skills" else add_section(t,sec[t]) if t in sec else None
-    frame_h=A4[1]-doc.topMargin-doc.bottomMargin; story=[KeepInFrame(doc.width,frame_h,story,mode="shrink",mergeSpace=True)]
+        for t in resume.get("section_order",["Skills","Experience","Projects","Education","Certifications","Achievements"]): add_skills("Skills & Tools") if t=="Skills" else add_section(t,sec[t]) if t in sec else None
+    # Let Platypus flow naturally to a second page when the source resume is content-heavy.
+    # This avoids tiny text and preserves every verified section instead of shrinking the page.
+
     def footer(canvas,doc_obj):
-        canvas.saveState();canvas.setStrokeColor(colors.HexColor("#DCE2EA"));canvas.line(30,18,A4[0]-30,18);canvas.setFont("Helvetica",6.7);canvas.setFillColor(colors.HexColor("#98A2B3"));canvas.drawString(30,8,"AI Resume Analyzer  •  ATS-conscious professional format");canvas.drawRightString(A4[0]-30,8,"1 page");canvas.restoreState()
+        canvas.saveState();canvas.setStrokeColor(colors.HexColor("#DCE2EA"));canvas.line(30,18,A4[0]-30,18);canvas.setFont("Helvetica",6.7);canvas.setFillColor(colors.HexColor("#98A2B3"));canvas.drawString(30,8,"AI Resume Analyzer  •  ATS-conscious professional format");canvas.drawRightString(A4[0]-30,8,f"Page {doc_obj.page}");canvas.restoreState()
     doc.build(story,onFirstPage=footer,onLaterPages=footer);buffer.seek(0);return buffer
 
 
@@ -2873,462 +3131,6 @@ def render_pdf_preview(pdf_bytes, label="PDF preview"):
         st.warning(f"Preview could not be rendered in-app. Please use the download button. ({type(exc).__name__})")
 
 
-
-# =========================================================
-# AI INTELLIGENCE ENGINE v2.0
-# Analysis-only upgrade: UI, theme, report layout and resume
-# template rendering are intentionally left untouched.
-# =========================================================
-
-FIELD_INTELLIGENCE = {
-    "Data / Analytics": {
-        "roles": ["Data Analyst", "Business Analyst", "BI Analyst", "Data Scientist", "Data Science Intern", "Analytics Intern"],
-        "skills": ["Python", "SQL", "MySQL", "Pandas", "NumPy", "Excel", "Power BI", "Tableau", "Data Analysis", "Data Visualization", "EDA", "Statistics", "Matplotlib", "Seaborn", "Jupyter Notebook", "Git", "GitHub", "Data Cleaning", "ETL", "Database", "Power Query", "Dashboard", "Reporting", "Machine Learning", "Scikit-learn"],
-        "synonyms": {"powerbi":"Power BI", "power-bi":"Power BI", "ms excel":"Excel", "microsoft excel":"Excel", "exploratory data analysis":"EDA", "business intelligence":"Business Intelligence", "bi":"Business Intelligence", "data viz":"Data Visualization", "data visualization":"Data Visualization", "machine-learning":"Machine Learning", "ml":"Machine Learning"},
-        "domains": ["analytics", "business intelligence", "reporting", "insights", "datasets", "data-driven", "data quality", "forecasting", "experimentation"],
-        "responsibilities": ["analyze data", "clean data", "build dashboards", "create reports", "identify trends", "generate insights", "query data", "visualize data", "automate reporting", "present insights"],
-        "achievement_terms": ["increased", "reduced", "improved", "automated", "saved", "accuracy", "growth", "conversion", "time", "records", "rows", "dashboard", "report"],
-    },
-    "Software / IT": {
-        "roles": ["Software Engineer", "Software Developer", "Python Developer", "Web Developer", "Frontend Developer", "Backend Developer", "Full Stack Developer", "IT Intern"],
-        "skills": ["Python", "Java", "C++", "C", "JavaScript", "TypeScript", "HTML", "CSS", "React", "Angular", "Node.js", "Express", "Django", "Flask", "FastAPI", "Spring Boot", "SQL", "MySQL", "MongoDB", "PostgreSQL", "Git", "GitHub", "Docker", "AWS", "Azure", "Linux", "REST API", "APIs", "Firebase", "Scikit-learn", "TensorFlow", "PyTorch"],
-        "synonyms": {"js":"JavaScript", "ts":"TypeScript", "reactjs":"React", "react.js":"React", "nodejs":"Node.js", "node.js":"Node.js", "restful api":"REST API", "restful apis":"REST API", "postgres":"PostgreSQL", "mongo":"MongoDB", "version control":"Git", "cloud computing":"Cloud"},
-        "domains": ["software development", "web development", "application development", "backend", "frontend", "deployment", "testing", "debugging", "agile", "cloud"],
-        "responsibilities": ["develop software", "build applications", "write code", "debug issues", "design APIs", "develop features", "test applications", "deploy applications", "maintain code", "review code"],
-        "achievement_terms": ["performance", "latency", "bugs", "uptime", "users", "features", "deployment", "automation", "test coverage", "response time"],
-    },
-    "Business / Finance": {
-        "roles": ["Business Analyst", "Financial Analyst", "Finance Intern", "Operations Analyst", "Business Development Executive", "Business Intern"],
-        "skills": ["Excel", "SQL", "MySQL", "Data Analysis", "Power BI", "Tableau", "Statistics", "Reporting", "Data Visualization", "PowerPoint", "Financial Analysis", "Accounting", "Tally", "Project Management", "Operations", "Business Development", "CRM", "Microsoft Office"],
-        "synonyms": {"financial modelling":"Financial Modeling", "financial modeling":"Financial Modeling", "ms office":"Microsoft Office", "business intelligence":"Business Intelligence", "stakeholder management":"Stakeholder Management", "process improvement":"Process Improvement"},
-        "domains": ["finance", "business analysis", "operations", "forecasting", "budgeting", "accounting", "stakeholders", "process improvement", "business development"],
-        "responsibilities": ["analyze business data", "prepare reports", "forecast performance", "support budgeting", "analyze financials", "improve processes", "work with stakeholders", "track performance", "prepare presentations"],
-        "achievement_terms": ["revenue", "cost", "profit", "savings", "forecast accuracy", "efficiency", "growth", "budget", "conversion", "turnaround"],
-    },
-    "Marketing / Sales": {
-        "roles": ["Marketing Intern", "Digital Marketing Executive", "Marketing Analyst", "Sales Executive", "Sales Intern", "Business Development Executive"],
-        "skills": ["Excel", "Data Analysis", "Data Visualization", "Reporting", "Power BI", "SEO", "SEM", "Google Analytics", "Google Ads", "Meta Ads", "Content Marketing", "Social Media Marketing", "Email Marketing", "Copywriting", "CRM", "Lead Generation", "Market Research", "Sales", "Negotiation"],
-        "synonyms": {"digital advertising":"Digital Marketing", "social media":"Social Media Marketing", "paid search":"SEM", "search engine optimization":"SEO", "search engine marketing":"SEM", "google analytics 4":"Google Analytics", "ga4":"Google Analytics", "customer acquisition":"Lead Generation"},
-        "domains": ["campaigns", "marketing", "sales", "customers", "acquisition", "engagement", "content", "conversion", "brand", "pipeline"],
-        "responsibilities": ["manage campaigns", "analyze campaign performance", "generate leads", "create content", "manage social media", "conduct market research", "track conversions", "support sales", "engage customers"],
-        "achievement_terms": ["leads", "conversion", "engagement", "reach", "clicks", "revenue", "sales", "customers", "roi", "growth"],
-    },
-    "Design / Creative": {
-        "roles": ["Graphic Designer", "UI Designer", "UX Designer", "Product Designer", "Content Designer", "Creative Intern", "Social Media Designer"],
-        "skills": ["Figma", "Adobe Photoshop", "Adobe Illustrator", "Canva", "UI Design", "UX Design", "Prototyping", "Wireframing", "Branding", "Creative Content", "Data Visualization"],
-        "synonyms": {"ui/ux":"UI/UX", "user interface":"UI Design", "user experience":"UX Design", "adobe ps":"Adobe Photoshop", "illustrator":"Adobe Illustrator", "visual design":"Visual Design", "design systems":"Design System"},
-        "domains": ["branding", "visual design", "user experience", "user interface", "creative", "content", "typography", "layout", "visual communication"],
-        "responsibilities": ["design graphics", "create visual assets", "develop layouts", "create prototypes", "design interfaces", "build brand assets", "create social media content", "conduct user research"],
-        "achievement_terms": ["engagement", "reach", "assets", "campaigns", "deliverables", "clients", "projects", "turnaround", "brand"],
-    },
-    "HR / Administration": {
-        "roles": ["HR Intern", "HR Executive", "Recruiter", "Talent Acquisition Specialist", "Operations Intern", "Administrative Intern"],
-        "skills": ["Excel", "Microsoft Office", "Recruitment", "Talent Acquisition", "Human Resources", "HR", "Payroll", "Performance Management", "Communication", "Project Management", "Operations", "Reporting", "CRM"],
-        "synonyms": {"human resource management":"Human Resources", "talent acquisition":"Talent Acquisition", "employee relations":"Employee Relations", "hr operations":"HR Operations", "ms office":"Microsoft Office"},
-        "domains": ["recruitment", "hiring", "employees", "onboarding", "payroll", "people", "administration", "hr operations", "coordination"],
-        "responsibilities": ["screen candidates", "coordinate interviews", "support recruitment", "manage employee records", "support onboarding", "prepare reports", "coordinate teams", "maintain documentation"],
-        "achievement_terms": ["hires", "candidates", "time-to-hire", "retention", "onboarding", "employees", "records", "events", "training"],
-    },
-    "Student / Fresher": {
-        "roles": ["Graduate Intern", "Technical Intern", "Business Intern", "Management Trainee", "General Intern"],
-        "skills": ["Python", "SQL", "Excel", "Data Analysis", "Microsoft Office", "Communication", "Project Management", "Git", "GitHub"],
-        "synonyms": {},
-        "domains": ["academic projects", "internship", "coursework", "research", "teamwork", "learning"],
-        "responsibilities": ["complete projects", "conduct research", "analyze information", "prepare presentations", "collaborate with teams", "document work"],
-        "achievement_terms": ["projects", "presentations", "events", "members", "competition", "award", "percentage", "grade"],
-    },
-    "Other / Custom": {
-        "roles": ["Professional", "Intern", "Entry-Level Candidate"], "skills": [], "synonyms": {},
-        "domains": [], "responsibilities": [], "achievement_terms": []
-    },
-}
-
-# Keep the existing UI-facing profile structure, but make its data field-aware.
-for _field, _profile in FIELD_INTELLIGENCE.items():
-    if _field in FIELD_PROFILES:
-        FIELD_PROFILES[_field]["roles"] = _profile["roles"][:]
-        FIELD_PROFILES[_field]["skills"] = _profile["skills"][:]
-
-SKILL_ALIAS_GLOBAL = {}
-for _profile in FIELD_INTELLIGENCE.values():
-    SKILL_ALIAS_GLOBAL.update({str(k).lower(): v for k, v in _profile.get("synonyms", {}).items()})
-SKILL_ALIAS_GLOBAL.update({
-    "powerbi": "Power BI", "power-bi": "Power BI", "react.js": "React", "reactjs": "React",
-    "nodejs": "Node.js", "node.js": "Node.js", "postgres": "PostgreSQL", "mongo": "MongoDB",
-    "ms excel": "Excel", "microsoft excel": "Excel", "microsoft office": "Microsoft Office",
-    "github": "GitHub", "git hub": "GitHub", "scikit learn": "Scikit-learn", "scikit learn library": "Scikit-learn",
-})
-
-
-def _norm_ai(text):
-    text = (text or "").lower().replace("&", " and ")
-    text = re.sub(r"[/|_\-]+", " ", text)
-    text = re.sub(r"[^a-z0-9+#. ]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _phrase_present(text, phrase):
-    t = _norm_ai(text); p = _norm_ai(phrase)
-    if not p: return False
-    return re.search(r"(?<![a-z0-9])" + re.escape(p) + r"(?![a-z0-9])", t) is not None
-
-
-def _canonical_skill(skill):
-    s = str(skill or "").strip()
-    return SKILL_ALIAS_GLOBAL.get(_norm_ai(s), s)
-
-
-def _skill_evidence(text, skill):
-    """Return evidence strength without inferring an unsupported skill."""
-    if not _phrase_present(text, skill):
-        aliases = [k for k, v in SKILL_ALIAS_GLOBAL.items() if str(v).lower() == str(skill).lower()]
-        if not any(_phrase_present(text, a) for a in aliases):
-            return 0
-    lower = (text or "").lower()
-    score = 1
-    if re.search(r"\b(skills?|technical skills?|tools?|technologies?|proficienc|competenc)\b", lower):
-        score += 1
-    if re.search(r"\b(experience|developed|built|created|analyzed|designed|implemented|managed|used|worked|project|internship)\b", lower):
-        score += 1
-    return score
-
-
-def _all_known_skills(field=None):
-    if field and field in FIELD_INTELLIGENCE:
-        base = FIELD_INTELLIGENCE[field]["skills"][:]
-    else:
-        base = []
-        for p in FIELD_INTELLIGENCE.values(): base.extend(p["skills"])
-        base.extend(SKILLS_DB)
-    return list(dict.fromkeys(base))
-
-
-def detect_skills(text):
-    found = []
-    seen = set()
-    for skill in _all_known_skills():
-        canonical = _canonical_skill(skill)
-        if canonical.lower() in seen: continue
-        if _skill_evidence(text, skill) > 0:
-            found.append(canonical); seen.add(canonical.lower())
-    return sorted(found, key=lambda x: x.lower())
-
-
-def _extract_jd_requirements(jd_text, field=None):
-    """Parse a JD into weighted, evidence-backed requirement buckets."""
-    jd = jd_text or ""
-    if not jd.strip():
-        return {"skills": [], "must_skills": [], "preferred_skills": [], "keywords": [], "responsibilities": [], "education": [], "experience": [], "soft_skills": [], "role": None, "seniority": None}
-    f = field if field in FIELD_INTELLIGENCE else infer_field_from_text(jd, [])
-    known = _all_known_skills(f)
-    skills = []
-    for skill in known:
-        canonical = _canonical_skill(skill)
-        if _phrase_present(jd, skill) and canonical not in skills:
-            skills.append(canonical)
-    # Include globally known skills that may be outside the inferred field only when explicitly present.
-    for skill in SKILLS_DB:
-        canonical = _canonical_skill(skill)
-        if _phrase_present(jd, skill) and canonical not in skills:
-            skills.append(canonical)
-    lines = [x.strip(" •\t") for x in jd.splitlines() if x.strip()]
-    must_blob, preferred_blob = [], []
-    in_pref = False
-    for line in lines:
-        ll = line.lower()
-        if re.search(r"\b(preferred|nice to have|good to have|plus|bonus)\b", ll): in_pref = True
-        if re.search(r"\b(required|must have|required skills|qualifications|minimum)\b", ll): in_pref = False
-        (preferred_blob if in_pref else must_blob).append(line)
-    must_skills = [s for s in skills if _phrase_present(" ".join(must_blob), s)] if must_blob else []
-    preferred_skills = [s for s in skills if any(_phrase_present(" ".join(preferred_blob), s))] if preferred_blob else []
-    # Strong modal language upgrades importance even when the JD has no headings.
-    must_blob_text = " ".join(must_blob).lower()
-    for s in skills:
-        if s not in must_skills and re.search(r"(?:must|required|essential|mandatory).{0,80}" + re.escape(_norm_ai(s)), must_blob_text, re.I):
-            must_skills.append(s)
-    responsibilities = []
-    profile = FIELD_INTELLIGENCE.get(f, {})
-    for phrase in profile.get("responsibilities", []):
-        if _phrase_present(jd, phrase): responsibilities.append(phrase)
-    # Generic responsibility extraction from action-led lines.
-    for line in lines:
-        if re.match(r"^(develop|build|create|analy[sz]e|manage|design|support|coordinate|prepare|maintain|drive|lead|monitor|track|deliver|optimize|implement|conduct)\b", line, re.I):
-            if len(line.split()) >= 4 and len(line) <= 220: responsibilities.append(line)
-    responsibilities = list(dict.fromkeys(responsibilities))[:15]
-    education = re.findall(r"\b(?:bachelor(?:'s)?|master(?:'s)?|b\.? ?tech|bca|mca|mba|degree|diploma|computer science|engineering|commerce|finance|marketing|design|human resources)\b", jd, re.I)
-    exp = re.findall(r"\b(?:\d+\+?\s*(?:years?|yrs?)(?:\s+of)?\s+experience|entry[- ]level|fresher|internship|intern|graduate)\b", jd, re.I)
-    seniority = "Entry-Level" if re.search(r"\b(entry[- ]level|fresher|intern|internship|graduate|trainee)\b", jd, re.I) else ("Senior" if re.search(r"\b(senior|lead|manager|principal|head)\b", jd, re.I) else "Experienced")
-    soft_candidates = ["communication", "teamwork", "leadership", "problem solving", "stakeholder management", "time management", "collaboration", "presentation", "negotiation"]
-    soft_skills = [x for x in soft_candidates if _phrase_present(jd, x)]
-    important = []
-    for phrase in profile.get("domains", []) + profile.get("responsibilities", []):
-        if _phrase_present(jd, phrase): important.append(phrase)
-    words = re.findall(r"\b[a-zA-Z][a-zA-Z+#.-]{3,}\b", jd.lower())
-    counts = Counter(w for w in words if w not in JD_STOP_WORDS and w not in GENERIC_JD_WORDS)
-    lexical = [w for w,c in counts.most_common(25) if c >= 1]
-    keywords = list(dict.fromkeys([*skills, *important, *soft_skills, *lexical]))[:45]
-    role = infer_role_from_text(jd, f)
-    return {"skills": skills, "must_skills": list(dict.fromkeys(must_skills)), "preferred_skills": list(dict.fromkeys(preferred_skills)), "keywords": keywords, "responsibilities": responsibilities, "education": list(dict.fromkeys(education))[:8], "experience": list(dict.fromkeys(exp))[:8], "soft_skills": soft_skills, "role": role, "seniority": seniority}
-
-
-def extract_jd_skills(jd_text):
-    if not (jd_text or "").strip(): return []
-    # Keep this function signature for the existing UI; field inference is done again safely.
-    req = _extract_jd_requirements(jd_text)
-    return req["skills"]
-
-
-def extract_important_jd_keywords(jd_text, field=None):
-    if not (jd_text or "").strip(): return []
-    req = _extract_jd_requirements(jd_text, field)
-    return req["keywords"]
-
-
-def get_matching_skills(resume_skills, jd_skills):
-    r = {_canonical_skill(x).lower() for x in (resume_skills or [])}
-    return [s for s in (jd_skills or []) if _canonical_skill(s).lower() in r]
-
-
-def get_missing_skills(resume_skills, jd_skills):
-    r = {_canonical_skill(x).lower() for x in (resume_skills or [])}
-    return [s for s in (jd_skills or []) if _canonical_skill(s).lower() not in r]
-
-
-def get_matching_keywords(resume_text, jd_keywords):
-    return [k for k in (jd_keywords or []) if _phrase_present(resume_text, k)]
-
-
-def get_missing_keywords(resume_text, jd_keywords):
-    return [k for k in (jd_keywords or []) if not _phrase_present(resume_text, k)]
-
-
-def _role_similarity(resume_text, role, field):
-    if not role: return 0
-    if _phrase_present(resume_text, role): return 100
-    aliases = {"data analyst":["analytics", "data analysis"], "software developer":["software development", "programming"], "graphic designer":["graphic design", "visual design"], "marketing analyst":["marketing", "campaign analysis"], "business analyst":["business analysis", "process improvement"], "hr intern":["human resources", "recruitment"]}
-    hits = sum(_phrase_present(resume_text, x) for x in aliases.get(role.lower(), []))
-    return min(100, hits * 50)
-
-
-def infer_field_from_text(text, skills=None):
-    text_l = _norm_ai(text)
-    skill_set = {_canonical_skill(x).lower() for x in (skills or [])}
-    scores = {}
-    for field, profile in FIELD_INTELLIGENCE.items():
-        score = 0.0
-        for sig in profile.get("domains", []):
-            if _phrase_present(text_l, sig): score += 7 if " " in sig else 3
-        for role in profile.get("roles", []):
-            if _phrase_present(text_l, role): score += 14
-        for sk in profile.get("skills", []):
-            if _canonical_skill(sk).lower() in skill_set: score += 2.5
-        scores[field] = score
-    # Avoid classifying a clearly technical resume as generic fresher merely because it says "student".
-    if scores and max(scores.values()) < 8:
-        return "Student / Fresher"
-    scores["Student / Fresher"] = scores.get("Student / Fresher", 0) - (5 if max(scores.values(), default=0) > 12 else 0)
-    return max(scores, key=scores.get)
-
-
-def infer_role_from_text(text, field):
-    tl = _norm_ai(text)
-    profile = FIELD_INTELLIGENCE.get(field, FIELD_INTELLIGENCE["Student / Fresher"])
-    best, best_score = None, 0
-    for role in profile.get("roles", []):
-        score = 0
-        if _phrase_present(tl, role): score += 100
-        # Role words are useful only as weak supporting evidence.
-        for token in re.findall(r"[a-z]+", role.lower()):
-            if len(token) > 3 and re.search(r"\b" + re.escape(token) + r"\b", tl): score += 8
-        if score > best_score: best, best_score = role, score
-    return best or profile.get("roles", ["Professional"])[0]
-
-
-def infer_field_and_role(resume_text, jd_text, resume_skills, jd_skills):
-    resume_field = infer_field_from_text(resume_text, resume_skills)
-    resume_role = infer_role_from_text(resume_text, resume_field)
-    if (jd_text or "").strip():
-        jd_req = _extract_jd_requirements(jd_text)
-        jd_field = infer_field_from_text(jd_text, jd_req.get("skills", []))
-        # Explicit JD role wins; field follows the role when confidently identified.
-        jd_role = infer_role_from_text(jd_text, jd_field)
-        if jd_req.get("role") and jd_req["role"] in FIELD_INTELLIGENCE.get(jd_field, {}).get("roles", []):
-            jd_role = jd_req["role"]
-        return jd_field, jd_role
-    return resume_field, resume_role
-
-
-def infer_resume_field(resume_text, resume_skills):
-    return infer_field_from_text(resume_text, resume_skills)
-
-
-def infer_target_role(resume_text, field, resume_skills):
-    return infer_role_from_text(resume_text, field)
-
-
-def calculate_ats_score(resume_skills, matching_skills, jd_skills, sections, contact, has_projects, has_experience, achievements, field="Student / Fresher", resume_text="", bullets=None, readability=0):
-    """General ATS compatibility score, independent of JD presence."""
-    profile = FIELD_INTELLIGENCE.get(field, FIELD_INTELLIGENCE["Student / Fresher"])
-    profile_skills = {_canonical_skill(x).lower() for x in profile.get("skills", [])}
-    resume_skill_set = {_canonical_skill(x).lower() for x in (resume_skills or [])}
-    relevant = len(resume_skill_set & profile_skills)
-    skills_score = min(25, round(8 + relevant * 1.7 + min(5, max(0, len(resume_skills or []) - relevant) * 0.5))) if resume_skills else 0
-    section_count = sum(bool(v) for v in (sections or {}).values())
-    structure_score = round(min(18, 18 * section_count / max(1, len(sections))))
-    contact_score = round(sum(bool(v) for v in (contact or {}).values()) / max(1, len(contact)) * 10)
-    evidence_score = (8 if has_projects else 0) + (7 if has_experience else 0)
-    achievement_score = min(10, len(achievements or []) * 2)
-    bullet_score = min(7, round(len(bullets or []) * 0.8))
-    readability_component = min(5, round(max(0, float(readability or 0)) / 20))
-    words = len((resume_text or "").split())
-    if 250 <= words <= 750: density_score = 10
-    elif 150 <= words <= 1000: density_score = 8
-    elif words > 0: density_score = 5
-    else: density_score = 0
-    total = min(100, round(skills_score + structure_score + contact_score + evidence_score + achievement_score + bullet_score + readability_component + density_score))
-    return total, {
-        "Skills & Role Relevance": skills_score,
-        "ATS Structure": structure_score,
-        "Contact Information": contact_score,
-        "Projects / Experience": evidence_score,
-        "Achievements": achievement_score,
-        "Bullet Quality": bullet_score,
-        "Readability": readability_component,
-        "Content Density": density_score,
-    }
-
-def _weighted_job_match(resume_text, resume_skills, jd_text, field, role):
-    if not (jd_text or "").strip(): return 0, {}
-    req = _extract_jd_requirements(jd_text, field)
-    rskills = {_canonical_skill(x).lower() for x in (resume_skills or [])}
-    must = req["must_skills"]; all_skills = req["skills"]
-    must_hit = [s for s in must if _canonical_skill(s).lower() in rskills]
-    skill_hit = [s for s in all_skills if _canonical_skill(s).lower() in rskills]
-    must_cov = len(must_hit) / len(must) if must else (len(skill_hit) / len(all_skills) if all_skills else 0.0)
-    skill_cov = len(skill_hit) / len(all_skills) if all_skills else 0.0
-    present_keywords = [k for k in req["keywords"] if _phrase_present(resume_text, k)]
-    keyword_cov = len(present_keywords) / len(req["keywords"]) if req["keywords"] else 0.0
-    resp_hits = [r for r in req["responsibilities"] if _phrase_present(resume_text, r)]
-    resp_cov = len(resp_hits) / len(req["responsibilities"]) if req["responsibilities"] else (keyword_cov * .6)
-    role_cov = _role_similarity(resume_text, role, field) / 100
-    education_cov = 1.0 if not req["education"] else min(1.0, sum(_phrase_present(resume_text, x) for x in req["education"]) / len(req["education"]))
-    experience_cov = 1.0 if not req["experience"] else min(1.0, sum(_phrase_present(resume_text, x) for x in req["experience"]) / len(req["experience"]))
-    soft_cov = 1.0 if not req["soft_skills"] else sum(_phrase_present(resume_text, x) for x in req["soft_skills"]) / len(req["soft_skills"])
-    score = 100 * (0.30*must_cov + 0.18*skill_cov + 0.18*keyword_cov + 0.16*resp_cov + 0.10*role_cov + 0.04*education_cov + 0.04*experience_cov)
-    if req["soft_skills"]: score = score * .95 + 5 * soft_cov
-    details = {"must_required": must, "must_matched": must_hit, "skills": all_skills, "skill_matched": skill_hit, "keywords": req["keywords"], "keywords_matched": present_keywords, "responsibilities": req["responsibilities"], "responsibilities_matched": resp_hits, "role": req["role"], "seniority": req["seniority"], "education": req["education"], "experience": req["experience"], "soft_skills": req["soft_skills"], "confidence": min(100, round(45 + min(25,len(all_skills)*4) + min(20,len(req["keywords"])*1.5) + (10 if req["role"] else 0)))}
-    return max(0, min(100, round(score))), details
-
-
-def calculate_quality_score(text, sections, achievements, has_projects, has_experience):
-    """Evidence/content quality, independent from target JD."""
-    score = 35
-    section_count = sum(bool(v) for v in (sections or {}).values())
-    score += min(20, round(section_count * 2.5))
-    words = len((text or "").split())
-    if 250 <= words <= 750: score += 15
-    elif 150 <= words <= 1000: score += 10
-    if achievements: score += min(10, len(achievements)*2)
-    if has_projects: score += 5
-    if has_experience: score += 5
-    bullets = get_bullet_points(text)
-    if len(bullets) >= 5: score += 5
-    return min(100, round(score))
-
-
-def calculate_nlp_score(action_verbs, bullets, readability, weak_verbs, generic_phrases):
-    strong = min(20, len(action_verbs) * 2)
-    bullet_score = min(15, len(bullets) * 1.5)
-    read = round(readability * .20)
-    penalties = min(20, len(weak_verbs)*2 + len(generic_phrases)*2)
-    return max(0, min(100, round(45 + strong + bullet_score + read - penalties)))
-
-
-def generate_summary(resume_skills, target_role="Professional", field="Student / Fresher", jd_text="", resume_text=""):
-    role = (target_role or "Professional").strip() or "Professional"
-    profile = FIELD_INTELLIGENCE.get(field, FIELD_INTELLIGENCE["Student / Fresher"])
-    available = [_canonical_skill(x) for x in (resume_skills or [])]
-    relevant = [x for x in profile.get("skills", []) if _canonical_skill(x).lower() in {a.lower() for a in available}]
-    if not relevant: relevant = available[:8]
-    relevant = list(dict.fromkeys(relevant))[:7]
-    skill_text = ", ".join(relevant) if relevant else "transferable skills"
-    focus_map = {
-        "Data / Analytics":"data analysis, data cleaning, exploratory analysis, visualization, reporting, and evidence-based insights",
-        "Software / IT":"software development, programming, testing, debugging, and building reliable technical solutions",
-        "Business / Finance":"business analysis, reporting, financial/operational analysis, process improvement, and decision support",
-        "Marketing / Sales":"campaign execution, customer engagement, market research, content, lead generation, and performance analysis",
-        "Design / Creative":"visual communication, branding, interface/content design, prototyping, and audience-focused creative work",
-        "HR / Administration":"recruitment support, coordination, documentation, reporting, and people-focused operations",
-        "Student / Fresher":"academic projects, practical problem solving, collaboration, and continuous professional learning",
-        "Other / Custom":"practical projects, problem solving, communication, and continuous learning",
-    }
-    jd_req = _extract_jd_requirements(jd_text, field) if (jd_text or "").strip() else None
-    jd_focus = [] if not jd_req else [s for s in jd_req.get("skills", []) if _canonical_skill(s).lower() in {a.lower() for a in available}][:4]
-    if jd_focus:
-        focus = ", ".join(jd_focus)
-        return (f"Aspiring {role} with hands-on knowledge of {skill_text}. Focused on applying {focus} to practical {field.lower()} work, while contributing through structured problem solving, collaboration, and evidence-based execution. Seeking a {role} opportunity to apply existing skills and continue building professional impact.")
-    prefix = "BCA student and aspiring" if field in {"Data / Analytics","Software / IT","Business / Finance","Marketing / Sales","Design / Creative","HR / Administration","Student / Fresher"} else "Motivated candidate and aspiring"
-    return f"{prefix} {role} with hands-on knowledge of {skill_text}. Focused on {focus_map.get(field, focus_map['Other / Custom'])} and applying practical skills to real-world challenges. Seeking a {role} opportunity to contribute effectively, learn continuously, and build measurable professional impact."
-
-
-def generate_recommendations(missing_skills, missing_keywords, achievements, contact, weak_verbs, generic_phrases, bullets, field="Student / Fresher", job_details=None):
-    rec = []
-    if job_details and job_details.get("must_required"):
-        missing_must = [s for s in job_details["must_required"] if s not in job_details.get("must_matched", [])]
-        if missing_must:
-            rec.append("Priority JD requirements not evidenced in the resume: " + ", ".join(missing_must[:6]) + ". Add them only if you genuinely have the skill or experience.")
-    elif missing_skills:
-        rec.append("Potential skill gaps for the target role: " + ", ".join(missing_skills[:8]) + ". Add only skills you genuinely know.")
-    if not achievements:
-        rec.append("Add evidence of impact where truthful: percentages, counts, time saved, accuracy, revenue, users, deliverables, or other measurable outcomes.")
-    if not contact.get("LinkedIn"):
-        rec.append("Add LinkedIn if available to make professional contact information easier to verify.")
-    if weak_verbs:
-        rec.append("Strengthen weak openings such as " + ", ".join(weak_verbs[:6]) + " by naming the action you personally performed.")
-    if generic_phrases:
-        rec.append("Replace generic phrases such as " + ", ".join(generic_phrases[:5]) + " with specific evidence or examples.")
-    if len(bullets) < 5:
-        rec.append("Use concise bullets for experience and projects; structure them as action + task + method/tool + evidence when the evidence exists.")
-    if job_details and job_details.get("confidence", 0) < 65:
-        rec.append("Job-description confidence is limited because the supplied JD contains relatively few structured requirements. Treat the match score as directional and review the source JD manually.")
-    return rec or ["Resume structure is reasonably complete. Keep each application role-specific and support claims with concrete evidence."]
-
-
-def improve_generic_phrases(text):
-    replacements = {
-        "hard working":"results-focused", "hardworking":"results-focused", "quick learner":"adaptable learner",
-        "team player":"collaborative team member", "good communication":"effective communication", "passionate":"motivated",
-        "familiar with":"knowledge of", "strong communication":"effective communication", "detail oriented":"detail-oriented",
-        "problem solving skills":"problem-solving skills", "analytical skills":"analytical capability"
-    }
-    found=[]; tl=(text or "").lower()
-    for phrase,replacement in replacements.items():
-        if phrase in tl: found.append({"Original":phrase,"Suggested":replacement,"Reason":"More specific, professional wording; replace only when it accurately reflects the candidate."})
-    return found
-
-
-def build_template_resume_data(data, field, target_role):
-    profile = FIELD_INTELLIGENCE.get(field, FIELD_INTELLIGENCE["Other / Custom"])
-    sections = extract_resume_sections(data.get("resume_text", ""))
-    skills = data.get("resume_skills", [])
-    allowed = {_canonical_skill(x).lower() for x in profile.get("skills", [])}
-    preferred = [s for s in skills if _canonical_skill(s).lower() in allowed]
-    # Preserve real detected skills even when a selected custom field has a small profile.
-    if not preferred: preferred = skills[:12]
-    role = target_role.strip() if target_role.strip() else profile["roles"][0]
-    summary = generate_summary(skills, role, field, data.get("jd_text", ""), data.get("resume_text", ""))
-    return {
-        "name": data.get("candidate_name") or extract_candidate_name(data.get("resume_text", "")),
-        "email": re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", data.get("resume_text", ""))[:1],
-        "phone": re.findall(r"(?:\+91[\s-]?)?[6-9]\d{9}", data.get("resume_text", ""))[:1],
-        "linkedin": re.findall(r"https?://(?:www\.)?linkedin\.com/[^\s]+", data.get("resume_text", ""), re.I)[:1],
-        "github": re.findall(r"https?://(?:www\.)?github\.com/[^\s]+", data.get("resume_text", ""), re.I)[:1],
-        "role": role, "summary": summary, "skills": preferred[:20],
-        "education": sections.get("Education", []), "experience": sections.get("Experience", []), "projects": sections.get("Projects", []),
-        "certifications": sections.get("Certifications", []), "achievements": sections.get("Achievements", []),
-        "section_order": profile.get("section_order", ["Summary","Skills","Experience","Projects","Education","Certifications","Achievements"]), "field": field,
-    }
-
 # =========================================================
 # SIDEBAR
 # =========================================================
@@ -3386,6 +3188,12 @@ with input_col2:
     jd_text = st.text_area("🎯 Paste Job Description", height=158, placeholder="Paste the target job description here to calculate job match, missing skills and important keywords...")
 
 analyze_button = st.button("🔍 Analyze Resume", use_container_width=True, type="primary")
+remove_analysis_button = st.button("🗑️ Remove Analysis", use_container_width=True, key="remove_analysis_v20")
+
+if remove_analysis_button:
+    for _key in ["analysis", "generated_resume_pdf", "generated_resume_field", "generated_resume_template", "generated_resume_role", "generated_resume_name", "generated_resume_variant"]:
+        st.session_state.pop(_key, None)
+    st.rerun()
 
 
 # =========================================================
@@ -3522,9 +3330,15 @@ if analyze_button:
 
             ats_score, ats_breakdown = (
                 calculate_ats_score(
-                    resume_skills, matching_skills, jd_skills, sections, contact,
-                    sections["Projects"], sections["Experience"], achievements, detected_field,
-                    resume_text=resume_text, bullets=bullets, readability=readability
+                    resume_skills,
+                    matching_skills,
+                    jd_skills,
+                    sections,
+                    contact,
+                    sections["Projects"],
+                    sections["Experience"],
+                    achievements,
+                    detected_field
                 )
             )
 
@@ -3549,12 +3363,17 @@ if analyze_button:
             )
 
             # -------------------------------------------------
-            # Job Match — weighted, JD-specific, separate from ATS
+            # Job Match
             # -------------------------------------------------
 
-            job_match, job_match_details = _weighted_job_match(
-                resume_text, resume_skills, jd_text, detected_field, detected_role
-            )
+            if jd_skills:
+                skill_match_pct = (len(matching_skills) / len(jd_skills)) * 100
+                keyword_match_pct = (len(matching_keywords) / len(jd_keywords) * 100) if jd_keywords else skill_match_pct
+                job_match = round((skill_match_pct * 0.75) + (keyword_match_pct * 0.25))
+            elif jd_keywords:
+                job_match = round((len(matching_keywords) / len(jd_keywords)) * 100)
+            else:
+                job_match = 0
 
             # -------------------------------------------------
             # Step 16
@@ -3579,12 +3398,17 @@ if analyze_button:
             )
 
             candidate_name = extract_candidate_name(resume_text)
-            improved_summary = generate_summary(resume_skills, detected_role, detected_field, jd_text, resume_text)
+            improved_summary = generate_summary(resume_skills, detected_role, detected_field)
 
             recommendations = (
                 generate_recommendations(
-                    missing_skills, missing_keywords, achievements, contact, weak_verbs,
-                    generic_phrases, bullets, detected_field, job_match_details if jd_text.strip() else None
+                    missing_skills,
+                    missing_keywords,
+                    achievements,
+                    contact,
+                    weak_verbs,
+                    generic_phrases,
+                    bullets
                 )
             )
 
@@ -3614,8 +3438,6 @@ if analyze_button:
                 "candidate_name": candidate_name,
                 "detected_field": detected_field,
                 "detected_role": detected_role,
-                "jd_text": jd_text or "",
-                "original_resume_pdf": uploaded_file.getvalue(),
 
                 "resume_skills":
                     resume_skills,
@@ -3682,12 +3504,6 @@ if analyze_button:
 
                 "job_match":
                     job_match,
-
-                "job_match_details":
-                    job_match_details,
-
-                "analysis_confidence":
-                    (job_match_details.get("confidence", 0) if jd_text.strip() else min(100, 60 + min(35, len(resume_skills) * 2))),
 
                 "weak_verb_suggestions":
                     weak_verb_suggestions,
@@ -3808,44 +3624,26 @@ if "analysis" in st.session_state:
         for category, score in data.get("ats_breakdown", {}).items()
     ]
 
-    component_max = {
-        "Skills & Role Relevance": 25,
-        "ATS Structure": 18,
-        "Contact Information": 10,
-        "Projects / Experience": 15,
-        "Achievements": 10,
-        "Bullet Quality": 7,
-        "Readability": 5,
-        "Content Density": 10,
-    }
-    st.info(
-        f"ATS Compatibility: {int(data.get('ats_score', 0))}/100 — "
-        "each bar shows points earned out of that category's maximum. "
-        "ATS measures resume compatibility; Job Match is calculated separately from the JD."
-    )
-    chart_rows = []
-    for label, score in breakdown_rows:
-        maximum = component_max.get(label, max(1, score))
-        pct = max(0, min(100, (score / maximum) * 100))
-        row = ('<div class="ats-chart-row">'
-               f'<div class="ats-chart-label">{label}</div>'
-               f'<div class="ats-chart-track"><div class="ats-chart-fill" style="width:{pct:.1f}%"></div></div>'
-               f'<div class="ats-chart-value">{score}/{maximum}</div></div>')
-        chart_rows.append(row)
-    st.markdown('<div class="ats-chart">' + ''.join(chart_rows) + '</div>', unsafe_allow_html=True)
+    breakdown_df_rows = breakdown_rows
 
-    # Transparent ATS calculation: show exactly how the displayed total is built.
-    st.markdown("#### How the ATS score is built")
-    score_table_rows = []
-    total_earned = 0
-    total_max = sum(component_max.values())
-    for label, score in breakdown_rows:
-        maximum = component_max.get(label, max(1, score))
-        total_earned += score
-        score_table_rows.append([label, f"{score}/{maximum}", f"{(score / maximum * 100):.0f}%"])
-    score_table_rows.append(["Total ATS Compatibility", f"{int(data.get('ats_score', 0))}/100", f"{int(data.get('ats_score', 0))}%"])
-    render_analysis_table(["Category", "Points", "Category coverage"], score_table_rows, numeric_last=True)
-    st.caption("The total is the sum of the eight ATS components above, capped at 100. Job Match is intentionally separate and uses the supplied job description.")
+    # Lightweight HTML/CSS chart instead of matplotlib canvas.
+    # This avoids the stray ``canvascanvas`` text artifact in Streamlit while
+    # keeping the ATS breakdown visual, crisp and theme-friendly.
+    chart_rows = []
+    chart_sorted = sorted(breakdown_rows, key=lambda item: item[1], reverse=True)
+    chart_max = max(30, max((score for _, score in chart_sorted), default=0) + 5)
+    for label, score in chart_sorted:
+        pct = max(0, min(100, (score / chart_max) * 100))
+        chart_rows.append(f"""
+        <div class=\"ats-chart-row\">
+          <div class=\"ats-chart-label\">{label}</div>
+          <div class=\"ats-chart-track\"><div class=\"ats-chart-fill\" style=\"width:{pct:.1f}%\"></div></div>
+          <div class=\"ats-chart-value\">{int(round(score))}</div>
+        </div>""")
+    st.markdown(
+        '<div class=\"ats-chart\">' + ''.join(chart_rows) + '</div>',
+        unsafe_allow_html=True
+    )
 
 
 
@@ -4342,7 +4140,7 @@ if "analysis" in st.session_state:
     c1,c2=st.columns(2)
     with c1: selected_field=st.selectbox("🎯 Target field",field_options,index=fi,key="resume_field_selector_v3")
     with c2:
-        templates=["ATS Professional","Data Analyst Pro","Modern Sidebar","Executive Minimal","Creative Modern","Academic Pro","Tech Compact","Portfolio Accent","Editorial Luxe","Minimal Mono","Corporate Grid","Creative Portfolio","Swiss Modern","Nordic Executive","Tech Aurora","Finance Elite","Creative Studio","OnePage Classic"]
+        templates=["ATS Professional","Data Analyst Pro","Modern Sidebar","Executive Minimal","Creative Modern","Academic Pro","Tech Compact","Portfolio Accent","Editorial Luxe","Minimal Mono","Corporate Grid","Creative Portfolio","Swiss Modern","Nordic Executive","Tech Aurora","Finance Elite","Creative Studio","OnePage Classic","Canva Editorial","Apex Modern","Glass Grid","Studio Split"]
         recommended_templates={
             "Data / Analytics":"Data Analyst Pro",
             "Software / IT":"Tech Compact",
@@ -4356,7 +4154,7 @@ if "analysis" in st.session_state:
         default_template=recommended_templates.get(selected_field,"ATS Professional")
         selected_template=st.selectbox("🎨 Professional template",templates,index=templates.index(default_template),key="resume_template_selector_v3")
     st.caption(f"◈ AI target detected from Resume + JD: **{detected_field}** • **{detected_role}**. You can override the field/title.")
-    st.info(f"⭐ Recommended template for **{selected_field}**: **{recommended_templates.get(selected_field, 'ATS Professional')}**. You can still choose any of the 18 professional designs.")
+    st.info(f"⭐ Recommended template for **{selected_field}**: **{recommended_templates.get(selected_field, 'ATS Professional')}**. You can still choose any of the 22 professional designs.")
     roles=list(FIELD_PROFILES[selected_field]["roles"])
     if detected_role and detected_role not in roles:
         roles.insert(0, detected_role)
@@ -4365,7 +4163,7 @@ if "analysis" in st.session_state:
     with r1: selected_role=st.selectbox("💼 Target job title",roles,index=ri,key="resume_role_selector_v3")
     with r2: custom_role=st.text_input("Optional custom title",placeholder="e.g. Data Analyst Intern",key="resume_custom_role_v3")
     target_role=custom_role.strip() or selected_role
-    notes={"ATS Professional":"Maximum ATS readability with clean hierarchy.","Data Analyst Pro":"Premium analytics layout with structured toolkit and profile panel.","Modern Sidebar":"Compact sidebar-inspired profile architecture.","Executive Minimal":"Elegant corporate typography and restrained styling.","Creative Modern":"Bold visual presentation with creative hierarchy.","Academic Pro":"Education and projects first for students/internships.","Tech Compact":"Dense modern technical layout for software/IT profiles.","Portfolio Accent":"Portfolio-inspired visual layout with strong accent language.","Editorial Luxe":"Editorial-style premium typography and asymmetric accents.","Minimal Mono":"Ultra-clean monochrome hierarchy for universal roles.","Corporate Grid":"Structured corporate profile with competency-first presentation.","Creative Portfolio":"Visual portfolio-style presentation for creative roles.","Swiss Modern":"Swiss-inspired grid, restrained typography and strong information hierarchy.","Nordic Executive":"Clean Nordic corporate design with calm spacing and modern structure.","Tech Aurora":"Technical profile with modern teal accents and compact information architecture.","Finance Elite":"Premium finance and corporate styling with restrained gold detailing.","Creative Studio":"Bold studio aesthetic with polished creative hierarchy.","OnePage Classic":"Traditional executive one-page layout with refined typography and maximum readability."}
+    notes={"ATS Professional":"Maximum ATS readability with clean hierarchy.","Data Analyst Pro":"Premium analytics layout with structured toolkit and profile panel.","Modern Sidebar":"Compact sidebar-inspired profile architecture.","Executive Minimal":"Elegant corporate typography and restrained styling.","Creative Modern":"Bold visual presentation with creative hierarchy.","Academic Pro":"Education and projects first for students/internships.","Tech Compact":"Dense modern technical layout for software/IT profiles.","Portfolio Accent":"Portfolio-inspired visual layout with strong accent language.","Editorial Luxe":"Editorial-style premium typography and asymmetric accents.","Minimal Mono":"Ultra-clean monochrome hierarchy for universal roles.","Corporate Grid":"Structured corporate profile with competency-first presentation.","Creative Portfolio":"Visual portfolio-style presentation for creative roles.","Swiss Modern":"Swiss-inspired grid, restrained typography and strong information hierarchy.","Nordic Executive":"Clean Nordic corporate design with calm spacing and modern structure.","Tech Aurora":"Technical profile with modern teal accents and compact information architecture.","Finance Elite":"Premium finance and corporate styling with restrained gold detailing.","Creative Studio":"Bold studio aesthetic with polished creative hierarchy.","OnePage Classic":"Traditional executive one-page layout with refined typography and maximum readability.","Canva Editorial":"Editorial portfolio layout with strong hierarchy and generous spacing.","Apex Modern":"Modern split-header layout with clean content rhythm and ATS-safe typography.","Glass Grid":"Contemporary grid layout with restrained panels and clear content separation.","Studio Split":"Creative split-header composition with structured sections and balanced whitespace."}
     st.info("💡 "+notes[selected_template])
     st.caption("ATS Safety: missing skills are never presented as claimed experience; no achievements or metrics are invented.")
     if st.button("✨ Generate Professional Resume",use_container_width=True,type="primary",key="generate_field_resume_v3"):
@@ -4409,6 +4207,24 @@ if "analysis" in st.session_state:
                 use_container_width=True,
                 key="download_generated_resume_v20",
             )
+        st.markdown("---")
+        st.subheader("📄 Original Resume", anchor=False)
+        st.caption("View or download the exact original resume uploaded for analysis. No formatting or content changes are applied.")
+        original_resume_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
+        if original_resume_bytes:
+            original_preview_tab, original_download_tab = st.tabs(["👀 View Original Resume", "📥 Download Original Resume"])
+            with original_preview_tab:
+                render_pdf_preview(original_resume_bytes, label="Original uploaded resume")
+            with original_download_tab:
+                original_name = uploaded_file.name if uploaded_file is not None else "Original_Resume.pdf"
+                st.download_button(
+                    "⬇️ Download Original Resume",
+                    original_resume_bytes,
+                    file_name=original_name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_original_resume_v21",
+                )
 
 
     # =====================================================
@@ -4508,26 +4324,6 @@ if "analysis" in st.session_state:
     else:
         st.success("Your NLP writing checks look strong. Keep tailoring keywords to each target job.")
 
-
-    # =====================================================
-    # ORIGINAL RESUME + RESET
-    # =====================================================
-
-    st.markdown("---")
-    st.subheader("📄 Original Resume", anchor=False)
-    original_pdf = data.get("original_resume_pdf")
-    if original_pdf:
-        st.caption("View the exact PDF that was analyzed. No changes are made to the original file.")
-        render_pdf_preview(original_pdf, label="Original uploaded resume")
-
-    if st.button("🗑️ Remove Analysis", use_container_width=True, key="remove_analysis_v21"):
-        for _key in [
-            "analysis", "generated_resume_pdf", "generated_resume_field",
-            "generated_resume_template", "generated_resume_role", "generated_resume_name",
-            "generated_resume_variant"
-        ]:
-            st.session_state.pop(_key, None)
-        st.rerun()
 
     # =====================================================
     # STEP 20 — FINAL UI / APPLICATION READINESS
