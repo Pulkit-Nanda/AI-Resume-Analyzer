@@ -311,12 +311,12 @@ div[data-testid="stExpander"] details > summary:hover {
 .nlp-suggestion>span{display:inline-flex;min-width:26px;height:26px;align-items:center;justify-content:center;border-radius:50%;background:var(--app-soft);color:var(--app-primary)!important;font-weight:800}
 .nlp-suggestion strong,.nlp-suggestion b{color:var(--app-text)!important}
 @media(max-width:760px){.nlp-stat-grid{grid-template-columns:1fr}}
-.ats-chart-row{display:grid;grid-template-columns:minmax(150px,1.1fr) minmax(220px,3fr) 48px;gap:14px;align-items:center;margin:11px 0}
+.ats-chart-row{display:grid;grid-template-columns:minmax(150px,1.1fr) minmax(220px,3fr) 64px;gap:14px;align-items:center;margin:11px 0}
 .ats-chart-label{font-size:.86rem;font-weight:700;color:var(--app-text)!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ats-chart-track{height:13px;border-radius:999px;background:color-mix(in srgb,var(--app-text) 10%,var(--app-surface));overflow:hidden}
 .ats-chart-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--app-primary),color-mix(in srgb,var(--app-primary) 68%,#22c55e));min-width:2px}
-.ats-chart-value{text-align:right;font-weight:800;color:var(--app-text)!important;font-size:.86rem}
-@media(max-width:760px){.ats-chart-row{grid-template-columns:1fr 44px;gap:7px}.ats-chart-track{grid-column:1 / 2}.ats-chart-value{grid-column:2;grid-row:1}.ats-chart-label{grid-column:1 / 2}}
+.ats-chart-value{text-align:right;font-weight:800;color:var(--app-text)!important;font-size:.86rem;white-space:nowrap}
+@media(max-width:760px){.ats-chart-row{grid-template-columns:1fr 60px;gap:7px}.ats-chart-track{grid-column:1 / 2}.ats-chart-value{grid-column:2;grid-row:1}.ats-chart-label{grid-column:1 / 2}}
 
 /* Remove only Streamlit heading anchor icons */
 .main h1 a,.main h2 a,.main h3 a,.main h4 a,.main h5 a,.main h6 a,
@@ -831,6 +831,70 @@ SKILLS_DB = [
 ]
 
 
+# Additional widely-used skills so JD matching is not limited to a small list.
+# (Field detection is unaffected: it only looks at each field profile's own skills.)
+SKILLS_DB += [
+    "Advanced Excel", "Google Sheets", "VBA", "Data Modeling", "Data Warehousing", "Data Mining",
+    "Data Wrangling", "Web Scraping", "Forecasting", "Regression", "A/B Testing", "Hypothesis Testing",
+    "Deep Learning", "NLP", "Computer Vision", "Keras", "OpenCV", "NLTK", "spaCy", "Streamlit",
+    "SciPy", "Plotly", "Looker Studio", "Looker", "BigQuery", "Snowflake", "Spark", "PySpark",
+    "Hadoop", "Airflow", "Kafka", "GCP", "Kubernetes", "Jenkins", "CI/CD", "Terraform", "Bash",
+    "Shell Scripting", "Redis", "Elasticsearch", "GraphQL", "Next.js", "Vue.js", "Bootstrap",
+    "Tailwind CSS", "PHP", "Ruby", "Postman", "Jira", "Agile", "Scrum", "SAP", "Salesforce",
+    "QuickBooks", "Financial Modeling", "Budgeting", "Digital Marketing", "Campaign Management",
+    "HubSpot", "Mailchimp", "Video Editing", "Premiere Pro", "After Effects", "Adobe XD",
+    "Adobe InDesign", "Onboarding", "Employee Engagement", "Stakeholder Management",
+]
+
+# Alternate spellings so "sklearn", "PowerBI", "data analytics" etc. are recognised.
+_SKILL_ALIASES = {
+    "Power BI": ["powerbi", "power-bi"],
+    "Scikit-learn": ["sklearn", "scikit learn"],
+    "Node.js": ["nodejs", "node js"],
+    "Machine Learning": ["ml"],
+    "Jupyter Notebook": ["jupyter", "jupyter notebooks"],
+    "PostgreSQL": ["postgres"],
+    "Data Visualization": ["data visualisation"],
+    "EDA": ["exploratory data analysis"],
+    "REST API": ["restful api", "restful apis", "rest apis"],
+    "APIs": ["api"],
+    "Microsoft Office": ["ms office", "ms-office"],
+    "PowerPoint": ["ppt", "ms powerpoint", "microsoft powerpoint"],
+    "MySQL": ["my sql"],
+    "TensorFlow": ["tensor flow"],
+    "GitHub": ["git hub"],
+    "Google Analytics": ["ga4"],
+    "Data Cleaning": ["data cleansing", "data preprocessing", "data pre-processing"],
+    "Data Analysis": ["data analytics"],
+    "Statistics": ["statistical analysis"],
+    "CRM": ["customer relationship management"],
+    "SEO": ["search engine optimization", "search engine optimisation"],
+    "HR": ["human resource"],
+    "NLP": ["natural language processing"],
+    "Computer Vision": ["image processing"],
+    "GCP": ["google cloud", "google cloud platform"],
+    "Adobe Photoshop": ["photoshop"],
+    "Adobe Illustrator": ["illustrator"],
+}
+
+
+def _skill_pattern(term):
+    term = str(term).lower()
+    if term == "c":
+        # the language "C" - not "C++" / "C#"
+        return r"(?<![\w+#.])c(?![\w+#])"
+    return r"(?<!\w)" + re.escape(term) + r"(?!\w)"
+
+
+def _skill_in_text(skill, text_lower):
+    """True if the skill (or a known alternate spelling) appears as a whole term."""
+    for term in [skill] + _SKILL_ALIASES.get(skill, []):
+        if re.search(_skill_pattern(term), text_lower):
+            return True
+    return False
+
+
+
 # =========================================================
 # IMPORTANT JOB KEYWORDS
 # =========================================================
@@ -865,30 +929,26 @@ IMPORTANT_JD_KEYWORDS = [
 # =========================================================
 
 ACTION_VERBS = [
-    "analyzed",
-    "developed",
-    "created",
-    "designed",
-    "performed",
-    "cleaned",
-    "processed",
-    "implemented",
-    "built",
-    "improved",
-    "optimized",
-    "automated",
-    "evaluated",
-    "identified",
-    "generated",
-    "managed",
-    "coordinated",
-    "led",
-    "delivered",
-    "researched",
-    "organized",
-    "presented",
-    "interpreted",
-    "visualized"
+    # analysis & data
+    "analyzed", "analysed", "analyze", "analyse", "interpreted", "evaluated", "evaluate", "identified", "identify",
+    "cleaned", "processed", "extracted", "transformed", "queried", "modeled", "modelled", "forecasted",
+    "predicted", "classified", "validated", "visualized", "visualize", "summarized", "compared", "researched",
+    "investigated", "tracked", "measured", "audited", "mined", "wrangled",
+    # building & technical
+    "developed", "develop", "built", "build", "created", "create", "designed", "design", "implemented", "implement",
+    "engineered", "programmed", "coded", "deployed", "integrated", "migrated", "configured", "tested", "debugged",
+    "automated", "automate", "optimized", "optimised", "optimize", "streamlined", "launched", "published",
+    "documented", "prototyped", "architected", "refactored", "scraped",
+    # applying / doing
+    "applied", "performed", "executed", "conducted", "prepared", "generated", "produced", "wrote",
+    "delivered", "deliver", "established", "maintained", "monitored", "resolved", "solved",
+    # leadership & collaboration
+    "managed", "manage", "led", "lead", "coordinated", "coordinate", "organized", "organised", "collaborated",
+    "mentored", "trained", "presented", "present", "negotiated", "supervised", "directed", "facilitated",
+    "communicated", "recruited", "onboarded",
+    # results
+    "improved", "improve", "increased", "reduced", "achieved", "boosted", "saved", "secured", "won",
+    "accelerated", "expanded", "grew",
 ]
 
 
@@ -899,9 +959,9 @@ WEAK_VERBS = [
     "used",
     "responsible",
     "involved",
-    "participated",
-    "supported"
+    "participated"
 ]
+
 
 
 # =========================================================
@@ -912,15 +972,23 @@ GENERIC_PHRASES = [
     "hard working",
     "hardworking",
     "quick learner",
+    "fast learner",
     "team player",
     "good communication",
+    "strong communication",
+    "excellent communication",
     "passionate",
     "motivated",
+    "highly motivated",
+    "self motivated",
     "familiar with",
-    "strong communication",
     "detail oriented",
     "problem solving skills",
-    "analytical skills"
+    "analytical skills",
+    "results driven",
+    "results oriented",
+    "go-getter",
+    "think outside the box"
 ]
 
 
@@ -1145,71 +1213,131 @@ def normalize_text(text):
 # =========================================================
 
 def detect_sections(text):
+    """Detect resume sections by *headings* (with safe content fallbacks).
 
-    text_lower = text.lower()
+    A section counts only when its heading is present (e.g. "Skills", "Work Experience",
+    "Skills: Python, SQL") or when the content clearly proves it (degree + institute for
+    Education, contact patterns for Contact, a run of known skills for Skills ...).
+    A word such as "experience" or "project" appearing inside a sentence is NOT a section.
+    """
+    text = str(text or "")
+    try:
+        text = repair_extracted_text(text)
+    except Exception:
+        pass
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
 
-    sections = {
-
-        "Contact": [
-            "contact",
-            "phone",
-            "email",
-            "linkedin",
-            "github"
-        ],
-
+    aliases = {
+        "Contact": ["contact", "contact information", "contact details", "personal details", "personal information"],
         "Profile / Summary": [
-            "profile",
-            "summary",
-            "objective"
+            "profile / summary", "profile", "summary", "professional summary", "career summary",
+            "career objective", "objective", "about me", "about", "professional profile",
+            "personal profile", "executive summary",
         ],
-
         "Education": [
-            "education",
-            "bachelor",
-            "bca",
-            "degree"
+            "education", "academic background", "academic qualifications", "educational qualifications",
+            "academics", "qualifications", "education & training", "education and training",
         ],
-
         "Skills": [
-            "skills",
-            "technical skills",
-            "core skills"
+            "skills", "technical skills", "core skills", "key skills", "skills & tools", "skills and tools",
+            "technical stack", "core competencies", "competencies", "tools & technologies",
+            "tools and technologies", "technologies", "technical proficiency", "areas of expertise",
+            "skills & expertise",
         ],
-
         "Experience": [
-            "experience",
-            "work experience",
-            "internship"
+            "experience", "work experience", "professional experience", "internship", "internships",
+            "internship experience", "employment", "employment history", "work history", "relevant experience",
         ],
-
         "Projects": [
-            "projects",
-            "project"
+            "projects", "project", "academic projects", "personal projects", "key projects",
+            "selected projects", "project work",
         ],
-
         "Certifications": [
-            "certification",
-            "certifications",
-            "certificate"
+            "certifications", "certification", "certificates", "certificate", "licenses & certifications",
+            "licenses and certifications", "courses", "training", "courses & certifications",
+            "certifications & courses", "certifications and courses",
         ],
-
         "Achievements": [
-            "achievement",
-            "achievements",
-            "awards",
-            "honors"
-        ]
+            "achievements", "achievement", "awards", "honors", "honours", "accomplishments",
+            "awards & achievements", "achievements & awards", "honors & awards", "awards and achievements",
+            "achievements and awards",
+        ],
     }
+    compact_map = {}
+    for section, names in aliases.items():
+        for name in names:
+            compact_map[re.sub(r"[^a-z0-9&/]", "", name.lower())] = section
 
-    detected = {}
+    def normalize(value):
+        value = re.sub(r"[\u2022\u25cf\u25aa\u25e6\u25cb\u25c9\u2023\u2043\u2219\u00b7\uf0b7\uf0a7*■□◆◇➤➢➣→|_=~#]+", " ", value)
+        value = re.sub(r"[^a-z0-9&/ ]", " ", value.lower())
+        return re.sub(r"\s+", " ", value).strip()
 
-    for section, keywords in sections.items():
+    detected = {section: False for section in
+               ["Contact", "Profile / Summary", "Education", "Skills", "Experience", "Projects", "Certifications", "Achievements"]}
 
-        detected[section] = any(
-            keyword in text_lower
-            for keyword in keywords
-        )
+    for line in lines:
+        key = normalize(line)
+        if key and len(line) <= 60 and len(key.split()) <= 6:
+            hit = compact_map.get(key.replace(" ", ""))
+            if hit:
+                detected[hit] = True
+                continue
+        # inline form:  "Skills: Python, SQL"  /  "Summary - motivated ..."
+        m = re.match(r"^\W*([A-Za-z &/]{3,40}?)\s*[:\u2013\u2014-]\s*\S", line)
+        if m:
+            hit = compact_map.get(re.sub(r"[^a-z0-9&/]", "", m.group(1).lower()))
+            if hit:
+                detected[hit] = True
+
+    low = text.lower()
+
+    # ---- content fallbacks (only where the content itself is conclusive) ----
+    if not detected["Contact"]:
+        has_email = bool(re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text))
+        has_phone = bool(re.search(r"(?<!\d)(?:\+?\d{1,3}[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)", text))
+        has_link = "linkedin.com" in low or "github.com" in low
+        detected["Contact"] = has_email or has_phone or has_link
+
+    if not detected["Education"]:
+        degree = re.search(
+            r"\b(bca|mca|b\.?\s?tech|m\.?\s?tech|bba|mba|b\.?\s?sc|m\.?\s?sc|b\.?\s?com|m\.?\s?com|"
+            r"bachelor(?:'s)?|master(?:'s)?|diploma|higher secondary|senior secondary|12th|10th|hsc|ssc|"
+            r"cbse|icse|cgpa|gpa)\b", low)
+        institute = re.search(r"\b(university|college|institute|school|academy|polytechnic)\b", low)
+        detected["Education"] = bool(degree and institute)
+
+    if not detected["Skills"]:
+        for line in lines:
+            if len(detect_skills(line)) >= 3 and re.search(r"[,|/•]", line):
+                detected["Skills"] = True
+                break
+
+    if not detected["Experience"]:
+        date_range = re.compile(
+            r"(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+)?\b(?:19|20)\d{2}\s*"
+            r"(?:[-\u2013\u2014]|to)\s*(?:present|current|now|(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+)?(?:19|20)\d{2})",
+            re.I)
+        job_word = re.compile(
+            r"\b(intern|internship|trainee|analyst|developer|engineer|associate|executive|assistant|manager|"
+            r"consultant|coordinator|specialist|officer|designer|freelance|apprentice)\b", re.I)
+        edu_word = re.compile(r"\b(university|college|institute|school|bca|mca|b\.?\s?tech|mba|bachelor|cgpa|gpa)\b", re.I)
+        for i, line in enumerate(lines):
+            if edu_word.search(line):
+                continue
+            window = line + " " + (lines[i + 1] if i + 1 < len(lines) and not edu_word.search(lines[i + 1]) else "")
+            if job_word.search(line) and date_range.search(window):
+                detected["Experience"] = True
+                break
+
+    if not detected["Certifications"]:
+        for line in lines:
+            if re.search(r"\bcertificat(?:e|ion)\b|\bcertified\b", line, re.I) and re.search(
+                    r"\b(coursera|udemy|google|microsoft|aws|nptel|edx|linkedin|simplilearn|great learning|infosys|ibm|meta|tata|forage|(?:19|20)\d{2})\b",
+                    line, re.I):
+                detected["Certifications"] = True
+                break
 
     return detected
 
@@ -1254,38 +1382,54 @@ def detect_contact(text):
 # =========================================================
 
 def detect_achievements(text):
+    """Find measurable-impact evidence: one signal per statement that carries a real result.
 
-    achievement_patterns = [
+    Counts percentages, money, scale ("200+ users"), multipliers ("2x"), result verbs backed
+    by a figure ("reduced ... by 40%") and awards.  Phone numbers, e-mails, links and plain
+    years are ignored so they can never be mistaken for achievements.
+    """
+    raw = str(text or "")
+    cleaned = re.sub(r"(?<!\w)\+?\d[\d \t\-().]{8,}\d(?!\w)", " ", raw)          # phone-like numbers
+    cleaned = re.sub(r"\S+@\S+", " ", cleaned)                                     # e-mails
+    cleaned = re.sub(r"https?://\S+|www\.\S+|\b[\w.-]+\.(?:com|in|io|org|net)/\S*", " ", cleaned)  # links
+    low = re.sub(r"\brs\.\s*", "rs ", cleaned.lower())
 
-        r"\b\d+\s*%",
-
-        r"\+\s*\d+",
-
-        r"\b\d+\s*(users|clients|projects|sales|members|records|rows|employees)\b",
-
-        r"\b(increased|decreased|reduced|improved|saved|generated|achieved)\b"
+    metric_patterns = [
+        r"\b\d+(?:\.\d+)?\s*%",
+        r"(?:[₹$€£]|\brs\s|\binr\s)\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|lakhs?|crores?|million|billion))?",
+        r"\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\+?\s+(?:users|clients|customers|projects|sales|members|records|rows|"
+        r"employees|datasets|reports|dashboards|models|students|leads|transactions|tickets|visitors|teams|"
+        r"applications|columns|features|products|orders|campaigns)\b",
+        r"\b\d+(?:\.\d+)?\s?[x×]\b",
     ]
+    result_verbs = (r"increased|decreased|reduced|improved|saved|generated|achieved|boosted|grew|cut|accelerated|"
+                    r"streamlined|optimi[sz]ed|lowered|raised|expanded|doubled|tripled|delivered")
+    award_pattern = (r"\b(?:won|winner|awarded|scholarship|topper|runner[- ]up|1st|2nd|3rd|first place|second place|"
+                     r"third place|secured\s+(?:rank|position))\b")
 
-    found = []
+    evidence = []
+    for unit in re.split(r"\n+|(?<=[a-z0-9%)])[.!?;](?=\s)", low):
+        unit = re.sub(r"^[^a-z0-9₹$€£]+", "", unit.strip())
+        if not unit:
+            continue
+        hit = None
+        for pattern in metric_patterns:
+            m = re.search(pattern, unit)
+            if m:
+                hit = m.group(0)
+                break
+        if not hit:
+            no_years = re.sub(r"\b(?:19|20)\d{2}\b", " ", unit)
+            if re.search(rf"\b(?:{result_verbs})\b", no_years) and re.search(r"\d", no_years):
+                hit = unit[:70]
+        if not hit:
+            m = re.search(award_pattern, unit)
+            if m:
+                hit = m.group(0)
+        if hit:
+            evidence.append(re.sub(r"\s+", " ", hit).strip())
 
-    for pattern in achievement_patterns:
-
-        matches = re.findall(
-            pattern,
-            text.lower()
-        )
-
-        if matches:
-            found.extend(matches)
-
-    return list(
-        set(
-            map(
-                str,
-                found
-            )
-        )
-    )
+    return evidence
 
 
 # =========================================================
@@ -1300,20 +1444,11 @@ def detect_skills(text):
 
     for skill in SKILLS_DB:
 
-        pattern = (
-            r"(?<!\w)"
-            + re.escape(skill.lower())
-            + r"(?!\w)"
-        )
-
-        if re.search(
-            pattern,
-            text_lower
-        ):
+        if _skill_in_text(skill, text_lower):
 
             found.append(skill)
 
-    return sorted(found)
+    return sorted(set(found))
 
 
 # =========================================================
@@ -1331,20 +1466,11 @@ def extract_jd_skills(jd_text):
 
     for skill in SKILLS_DB:
 
-        pattern = (
-            r"(?<!\w)"
-            + re.escape(skill.lower())
-            + r"(?!\w)"
-        )
-
-        if re.search(
-            pattern,
-            text_lower
-        ):
+        if _skill_in_text(skill, text_lower):
 
             found.append(skill)
 
-    return sorted(found)
+    return sorted(set(found))
 
 
 # =========================================================
@@ -1625,30 +1751,49 @@ def detect_action_verbs(text):
 
 
 def detect_weak_verbs(text):
+    """Flag weak wording where it actually weakens a statement.
 
-    text_lower = text.lower()
+    * A weak verb that *opens* a bullet/sentence ("Used SQL...", "Helped with...").
+    * Unmistakably vague phrases anywhere ("responsible for", "worked on", "participated in").
+    A verb sitting inside a longer sentence ("...the tools used by the team") is not flagged.
+    """
+    found = set()
+    start_re = re.compile(
+        r"^(?:[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→\-–—]+\s*)?(?:was\s+|were\s+|am\s+|is\s+)?"
+        r"(helped|assisted|worked|used|responsible|involved|participated)\b", re.I)
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if len(line.split()) < 3:
+            continue
+        m = start_re.match(line)
+        if m and (line[0] in "•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→-–—" or line[0].isupper()):
+            found.add(m.group(1).lower())
 
-    return [
-        verb
-        for verb in WEAK_VERBS
-        if re.search(
-            r"\b"
-            + re.escape(verb)
-            + r"\b",
-            text_lower
-        )
-    ]
+    phrase_patterns = {
+        "responsible": r"\bresponsible\s+for\b",
+        "worked": r"\bworked\s+(?:on|with|in)\b",
+        "helped": r"\bhelped\s+(?:to|with|in|the)\b",
+        "assisted": r"\bassisted\s+(?:in|with|the)\b",
+        "participated": r"\bparticipated\s+in\b",
+        "involved": r"\binvolved\s+in\b",
+    }
+    low = str(text or "").lower()
+    for verb, pattern in phrase_patterns.items():
+        if re.search(pattern, low):
+            found.add(verb)
+
+    return [verb for verb in WEAK_VERBS if verb in found]
 
 
 def detect_generic_phrases(text):
 
-    text_lower = text.lower()
-
-    return [
-        phrase
-        for phrase in GENERIC_PHRASES
-        if phrase in text_lower
-    ]
+    text_lower = str(text or "").lower()
+    found = []
+    for phrase in GENERIC_PHRASES:
+        pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"[\s-]+") + r"\b"
+        if re.search(pattern, text_lower):
+            found.append(phrase)
+    return found
 
 
 # =========================================================
@@ -1702,45 +1847,57 @@ def calculate_keyword_density(
 # =========================================================
 
 def readability_score(text):
+    """Score how easy the resume is to skim, from the length of its statements.
 
-    sentences = re.split(
-        r"[.!?]+",
-        text
-    )
+    Resumes rarely use full stops, so statements are rebuilt from lines (wrapped lines are
+    joined) and sentence punctuation; very short lines (headings, contact) are ignored.
+    """
+    units = []
+    current = ""
+    for raw in str(text or "").splitlines():
+        line = re.sub(r"^[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→\-–—\s]+", "", raw.strip())
+        if not line:
+            if current:
+                units.append(current)
+                current = ""
+            continue
+        starts_new = bool(re.match(r"^[•●▪◦○◉‣⁃∙·\uf0b7\uf0a7*■□◆◇➤➢➣→\-–—]", raw.strip())) or line[0].isupper()
+        if current and (starts_new or re.search(r"[.!?]$", current)):
+            units.append(current)
+            current = line
+        else:
+            current = (current + " " + line).strip()
+    if current:
+        units.append(current)
 
-    sentences = [
-        s.strip()
-        for s in sentences
-        if s.strip()
-    ]
+    lengths = []
+    for unit in units:
+        for part in re.split(r"(?<=[.!?])\s+", unit):
+            n = len(part.split())
+            if n >= 5:
+                lengths.append(n)
 
-    if not sentences:
+    if not lengths:
         return 0
 
-    total_words = sum(
-        len(sentence.split())
-        for sentence in sentences
-    )
+    avg_words = sum(lengths) / len(lengths)
 
-    avg_words = (
-        total_words
-        / len(sentences)
-    )
-
-    if avg_words <= 15:
-        return 95
-
-    elif avg_words <= 20:
-        return 85
-
+    if avg_words <= 20:
+        score = 95
     elif avg_words <= 25:
-        return 75
-
+        score = 85
     elif avg_words <= 30:
-        return 65
-
+        score = 75
+    elif avg_words <= 35:
+        score = 65
     else:
-        return 50
+        score = 50
+
+    long_ratio = sum(1 for n in lengths if n > 35) / len(lengths)
+    if long_ratio > 0.25:
+        score -= 10
+
+    return max(40, score)
 
 
 # =========================================================
@@ -1779,6 +1936,21 @@ def repeated_words(text, focus_terms=None):
 # ATS SCORE
 # =========================================================
 
+def _section_coverage_points(sections):
+    """0-20 points: 4 for each core section + up to 4 bonus for optional sections.
+
+    Core: Contact, Profile / Summary, Education, Skills.
+    Bonus (1 each): Experience, Projects, Certifications, Achievements - so a resume is
+    not penalised for lacking one specific optional section.
+    """
+    sections = sections or {}
+    core = ["Contact", "Profile / Summary", "Education", "Skills"]
+    bonus = ["Experience", "Projects", "Certifications", "Achievements"]
+    core_hits = sum(1 for key in core if sections.get(key))
+    bonus_hits = sum(1 for key in bonus if sections.get(key))
+    return min(20, core_hits * 4 + bonus_hits)
+
+
 def calculate_ats_score(
     resume_skills,
     matching_skills,
@@ -1808,19 +1980,7 @@ def calculate_ats_score(
         jd_score = 0
         jd_applicable = False
 
-    section_count = sum(
-        1
-        for value
-        in sections.values()
-        if value
-    )
-
-    section_score = round(
-        (
-            section_count
-            / len(sections)
-        ) * 20
-    )
+    section_score = _section_coverage_points(sections)
 
     contact_score = round(
         (
@@ -1884,45 +2044,38 @@ def calculate_quality_score(
     has_projects,
     has_experience
 ):
+    """Quality is earned (no free base): structure, length, evidence and bullet usage."""
 
-    score = 40
+    score = 20
 
-    section_count = sum(
-        1
-        for value
-        in sections.values()
-        if value
-    )
-
-    score += min(
-        20,
-        section_count * 2.5
-    )
+    score += _section_coverage_points(sections)
 
     word_count = len(
         text.split()
     )
 
-    if 200 <= word_count <= 700:
-
+    if 250 <= word_count <= 700:
         score += 20
-
     elif 150 <= word_count <= 900:
-
-        score += 15
-
-    else:
-
+        score += 14
+    elif 100 <= word_count <= 1100:
         score += 8
+    else:
+        score += 3
 
-    if achievements:
-        score += 10
+    score += min(15, len(achievements) * 3)
 
     if has_projects:
-        score += 5
+        score += 10
 
     if has_experience:
+        score += 10
+
+    bullet_count = len(get_bullet_points(text))
+    if bullet_count >= 5:
         score += 5
+    elif bullet_count >= 3:
+        score += 3
 
     return min(
         100,
@@ -1994,51 +2147,132 @@ def _safe_filename(value):
 # =========================================================
 
 WEAK_VERB_REPLACEMENTS = {
-    "helped": "contributed to",
+    "helped": "supported",
     "assisted": "supported",
-    "worked": "executed",
-    "used": "leveraged",
-    "participated": "contributed",
-    "responsible": "managed",
+    "worked": "developed / applied / collaborated on",
+    "used": "applied",
+    "responsible": "handled",
     "involved": "contributed to",
+    "participated": "contributed to",
+}
+
+WEAK_VERB_REASONS = {
+    "helped": "Names your contribution more directly; add what the work achieved.",
+    "assisted": "Names your contribution more directly; add what the work achieved.",
+    "worked": "Pick the verb that matches what you actually did instead of the vague 'worked'.",
+    "used": "Shows purpose ('Applied SQL to ...') rather than just tool usage.",
+    "responsible": "Lead with the action you performed, not the duty you held.",
+    "involved": "Use only if you actively contributed; otherwise state your specific task.",
+    "participated": "Use only if you actively contributed; otherwise state your specific task.",
 }
 
 
 def improve_weak_verbs(text):
-    """Return suggestions using a single-pass mapping (prevents chained replacements)."""
+    """Suggest replacements only for the weak verbs that are genuinely weak in this resume."""
     suggestions = []
-    lowered = text.lower()
-    for weak, strong in WEAK_VERB_REPLACEMENTS.items():
-        if re.search(r"\b" + re.escape(weak) + r"\b", lowered):
-            suggestions.append({"Original": weak, "Suggested": strong, "Reason": "Stronger and more action-oriented wording."})
+    for weak in detect_weak_verbs(text):
+        suggestions.append({
+            "Original": weak,
+            "Suggested": WEAK_VERB_REPLACEMENTS.get(weak, "a stronger action verb"),
+            "Reason": WEAK_VERB_REASONS.get(weak, "Stronger and more action-oriented wording."),
+        })
     return suggestions
 
 
+_GERUND_TO_PAST = {
+    "managing": "Managed", "developing": "Developed", "creating": "Created", "analyzing": "Analyzed",
+    "analysing": "Analyzed", "building": "Built", "maintaining": "Maintained", "preparing": "Prepared",
+    "handling": "Handled", "coordinating": "Coordinated", "designing": "Designed", "testing": "Tested",
+    "monitoring": "Monitored", "leading": "Led", "implementing": "Implemented", "organizing": "Organized",
+    "training": "Trained", "reviewing": "Reviewed", "cleaning": "Cleaned", "processing": "Processed",
+    "automating": "Automated", "optimizing": "Optimized", "evaluating": "Evaluated", "delivering": "Delivered",
+    "generating": "Generated", "tracking": "Tracked", "documenting": "Documented", "resolving": "Resolved",
+    "supporting": "Supported", "writing": "Wrote", "researching": "Researched", "presenting": "Presented",
+    "visualizing": "Visualized", "extracting": "Extracted", "transforming": "Transformed",
+    "deploying": "Deployed", "migrating": "Migrated", "configuring": "Configured", "updating": "Updated",
+    "collecting": "Collected", "gathering": "Gathered", "performing": "Performed", "conducting": "Conducted",
+    "executing": "Executed", "ensuring": "Ensured", "improving": "Improved",
+}
+
+
+_TOOL_NAMES = [
+    "Python", "SQL", "MySQL", "Pandas", "NumPy", "Matplotlib", "Seaborn", "Excel", "Advanced Excel", "Power BI",
+    "Tableau", "Looker", "Scikit-learn", "TensorFlow", "PyTorch", "Keras", "Git", "GitHub", "Jupyter Notebook",
+    "Power Query", "Java", "C++", "JavaScript", "TypeScript", "HTML", "CSS", "React", "Angular", "Node.js",
+    "Django", "Flask", "FastAPI", "Spring Boot", "Docker", "Kubernetes", "AWS", "Azure", "GCP", "Linux", "MongoDB",
+    "PostgreSQL", "Oracle", "Firebase", "Spark", "PySpark", "Hadoop", "Airflow", "Snowflake", "BigQuery", "Streamlit",
+    "Figma", "Adobe Photoshop", "Adobe Illustrator", "Canva", "PowerPoint", "Microsoft Office", "Tally", "SAP",
+    "Salesforce", "Jira", "Postman", "Google Analytics", "Google Sheets", "VBA",
+]
+
+
+def _past_tense_chain(text):
+    """After "Responsible for cleaning X and preparing Y" -> "Cleaned X and prepared Y"."""
+    def convert(m):
+        word = m.group(2).lower()
+        past = _GERUND_TO_PAST.get(word) or {"reporting": "Reported"}.get(word)
+        return m.group(1) + past.lower() if past else m.group(0)
+    return re.sub(r"(\band\s+|,\s+)([A-Za-z]+ing)\b", convert, text)
+
+
 def rewrite_bullet_professionally(bullet):
-    """Improve a weak opening without changing the underlying achievement or inventing metrics."""
+    """Strengthen a weak opening without changing what was claimed or inventing metrics.
+
+    Openings that would change the meaning (e.g. "Participated in ...") are left as they are.
+    """
     original = (bullet or "").strip()
     if not original:
         return original
     text = re.sub(r"^[•\-–—]\s*", "", original).strip()
-    replacements = [
-        (r"^assisted\s+in\s+", "Supported "),
-        (r"^assisted\s+with\s+", "Supported "),
-        (r"^helped\s+with\s+", "Contributed to "),
-        (r"^helped\s+to\s+", "Contributed to "),
-        (r"^participated\s+in\s+", "Contributed to "),
-        (r"^was\s+responsible\s+for\s+", "Managed "),
-        (r"^responsible\s+for\s+", "Managed "),
-        (r"^involved\s+in\s+", "Contributed to "),
-        (r"^used\s+", "Leveraged "),
-        (r"^worked\s+on\s+", "Executed work on "),
-    ]
+
+    def gerund_rewrite(rest):
+        first = rest.split(" ", 1)
+        past = _GERUND_TO_PAST.get(first[0].lower())
+        if past:
+            return past + (" " + first[1] if len(first) > 1 else "")
+        return None
+
     changed = False
-    for pattern, replacement in replacements:
-        text2, count = re.subn(pattern, replacement, text, count=1, flags=re.I)
-        if count:
-            text = text2
+    m = re.match(r"^(?:was\s+|were\s+)?responsible\s+for\s+(.+)$", text, re.I)
+    if m:
+        rest = m.group(1)
+        new = gerund_rewrite(rest)
+        text = new if new else "Handled " + rest
+        if new:
+            text = _past_tense_chain(text)
+        changed = True
+
+    if not changed:
+        m = re.match(r"^worked\s+on\s+(.+)$", text, re.I)
+        if m:
+            rest = m.group(1)
+            new = gerund_rewrite(rest)
+            text = new if new else "Contributed to " + rest
+            if new:
+                text = _past_tense_chain(text)
             changed = True
-            break
+
+    if not changed:
+        m = re.match(r"^worked\s+(?:extensively\s+|closely\s+)?with\s+(.+)$", text, re.I)
+        if m:
+            rest = m.group(1)
+            head = " ".join(rest.split()[:6]).lower()
+            uses_tool = any(_skill_in_text(skill, head) for skill in _TOOL_NAMES)
+            text = ("Applied " if uses_tool else "Collaborated with ") + rest
+            changed = True
+
+    if not changed:
+        for pattern, replacement in [
+            (r"^assisted\s+(?:in|with)\s+", "Supported "),
+            (r"^helped\s+with\s+", "Supported "),
+            (r"^used\s+", "Applied "),
+        ]:
+            text2, count = re.subn(pattern, replacement, text, count=1, flags=re.I)
+            if count:
+                text = text2
+                changed = True
+                break
+
     text = text[:1].upper() + text[1:] if text else text
     return text if changed else original
 
@@ -2052,57 +2286,78 @@ def improve_generic_phrases(text):
     replacements = {
 
         "hard working":
-            "dedicated and results-focused",
+            "a concrete example of sustained effort or a result you delivered",
 
         "hardworking":
-            "dedicated and results-focused",
+            "a concrete example of sustained effort or a result you delivered",
 
         "quick learner":
-            "adaptable and eager to learn",
+            "how quickly you learned a tool or skill (e.g. a project built with it)",
+
+        "fast learner":
+            "how quickly you learned a tool or skill (e.g. a project built with it)",
 
         "team player":
-            "collaborative team member",
+            "collaborative team member — mention a team project and your role",
 
         "good communication":
-            "effective communication",
+            "effective communication — mention a report or presentation you delivered",
+
+        "strong communication":
+            "effective communication — mention a report or presentation you delivered",
+
+        "excellent communication":
+            "effective communication — mention a report or presentation you delivered",
 
         "passionate":
-            "motivated",
+            "specific evidence of interest (a project, tool or result)",
+
+        "motivated":
+            "specific evidence of drive (a project, tool or result)",
+
+        "highly motivated":
+            "specific evidence of drive (a project, tool or result)",
+
+        "self motivated":
+            "specific evidence of initiative (a self-started project)",
 
         "familiar with":
             "knowledge of",
 
-        "strong communication":
-            "effective communication",
-
         "detail oriented":
-            "detail-oriented",
+            "a concrete example of accuracy (e.g. data validation you performed)",
 
         "problem solving skills":
-            "problem-solving skills"
+            "the specific problem you solved and how",
+
+        "analytical skills":
+            "the specific analysis you performed (e.g. 'analyzed customer data using SQL')",
+
+        "results driven":
+            "the measurable result you delivered",
+
+        "results oriented":
+            "the measurable result you delivered",
     }
 
     suggestions = []
 
-    text_lower = text.lower()
+    for phrase in detect_generic_phrases(text):
 
-    for phrase, replacement in (
-        replacements.items()
-    ):
+        suggestions.append({
 
-        if phrase in text_lower:
+            "Original":
+                phrase,
 
-            suggestions.append({
-
-                "Original":
+            "Suggested":
+                replacements.get(
                     phrase,
+                    "a specific example that proves it"
+                ),
 
-                "Suggested":
-                    replacement,
-
-                "Reason":
-                    "More professional and specific phrasing."
-            })
+            "Reason":
+                "More professional and specific phrasing."
+        })
 
     return suggestions
 
@@ -2126,7 +2381,31 @@ def improve_bullets(bullets):
 # SUMMARY GENERATION
 # =========================================================
 
-def generate_summary(resume_skills, target_role="Professional", field="Student / Fresher"):
+def _education_opening(education_text):
+    """Opening words for a generated summary, based only on what the resume states.
+
+    "BCA student and aspiring " only when a degree is found AND the education dates show the
+    person is still studying; otherwise a neutral "Aspiring ".
+    """
+    import datetime
+    edu = str(education_text or "")
+    if not edu.strip():
+        return "Aspiring "
+    years = [int(y) for y in re.findall(r"\b(20\d{2})\b", edu)]
+    studying = bool(re.search(r"\b(pursuing|currently|expected|final year|present|ongoing|semester)\b", edu, re.I)) \
+        or bool(years and max(years) >= datetime.date.today().year)
+    if not studying:
+        return "Aspiring "
+    m = re.search(r"\b(BCA|MCA|B\.?\s?Tech|M\.?\s?Tech|BBA|MBA|B\.?\s?Sc|M\.?\s?Sc|B\.?\s?Com|M\.?\s?Com)\b", edu, re.I)
+    if m:
+        labels = {"bca": "BCA", "mca": "MCA", "btech": "B.Tech", "mtech": "M.Tech", "bba": "BBA", "mba": "MBA",
+                  "bsc": "B.Sc", "msc": "M.Sc", "bcom": "B.Com", "mcom": "M.Com"}
+        key = re.sub(r"[.\s]", "", m.group(1).lower())
+        return f"{labels.get(key, m.group(1))} student and aspiring "
+    return "Student and aspiring "
+
+
+def generate_summary(resume_skills, target_role="Professional", field="Student / Fresher", resume_text=""):
     """Generate a field-aware summary using only relevant detected skills."""
     role = (target_role or "Professional").strip() or "Professional"
     field = field or "Student / Fresher"
@@ -2155,8 +2434,14 @@ def generate_summary(resume_skills, target_role="Professional", field="Student /
         focus = "recruitment, coordination, documentation, communication, and people-focused processes"
     else:
         focus = "practical project work, problem solving, communication, and continuous learning"
-    student_prefix = "BCA student and aspiring " if any(x in available_lower for x in {"python", "sql", "mysql"}) else "Motivated candidate and aspiring "
-    return (f"{student_prefix}{role} with hands-on knowledge of {skill_text}. "
+    education_text = ""
+    if resume_text:
+        try:
+            education_text = " ".join(extract_resume_sections(resume_text).get("Education", []))
+        except Exception:
+            education_text = ""
+    opening = _education_opening(education_text)
+    return (f"{opening}{role} with hands-on knowledge of {skill_text}. "
             f"Focused on {focus} and applying practical skills to real-world challenges. "
             f"Seeking a {role} opportunity to contribute effectively, learn continuously, and deliver meaningful results.")
 
@@ -2230,7 +2515,7 @@ def generate_improved_resume(
 
     lines.append(
         generate_summary(
-            resume_skills, target_role, field
+            resume_skills, target_role, field, resume_text=original_text
         )
     )
 
@@ -2513,17 +2798,153 @@ def _report_callout(title,text,fill="#F4F3FF",accent="#635BDB"):
     tx=ParagraphStyle("ReportCalloutText",fontName="Helvetica",fontSize=8.6,leading=12,textColor=colors.HexColor("#344054"))
     return Table([[Paragraph(_safe_pdf_text(title),hd)],[Paragraph(_safe_pdf_text(text),tx)]],colWidths=[6.85*inch],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor(fill)),("BOX",(0,0),(-1,-1),.7,colors.HexColor(accent)),("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),("TOPPADDING",(0,0),(-1,0),7),("BOTTOMPADDING",(0,0),(-1,0),1),("TOPPADDING",(0,1),(-1,1),1),("BOTTOMPADDING",(0,1),(-1,1),7)]))
 
+# Vocabulary used only to repair spacing in the PDF report's example table.
+# (Independent from the analysis engines; nothing else reads it.)
+_REPORT_VOCAB = set("""
+a i an as at be by do go he if in is it me my no of on or so to up us we ai ml bi
+the and for with from into onto over under about after before between through during using via per than then that this these those their there they them
+was were are been being have has had having will would shall should can could may might must not but nor yet both either each every other another such same
+also more most many much some any all few own very just only into within without across against along among around
+i am you your our us his her its who whom whose which what when where why how while
+applied apply applying worked work working works extensively extensive experience experienced developed develop developing development built build building
+created create creating designed design designing implemented implement implementing analyzed analyze analyzing analysis analytical analyst analytics
+managed manage managing led lead leading leadership improved improve improving improvement increased increase increasing reduced reduce reducing
+delivered deliver delivering presented present presenting presentation presentations communicated communicate communicating communication communications
+collaborated collaborate collaborating collaboration collaborative coordinated coordinate coordinating supported support supporting assisted assist assisting
+performed perform performing conducted conduct conducting prepared prepare preparing generated generate generating maintained maintain maintaining
+identified identify identifying evaluated evaluate evaluating optimized optimize optimizing automated automate automating automation streamlined streamline
+processed process processing processes cleaned clean cleaning explored explore exploring visualized visualize visualizing visualization visualizations visual
+extracted extract extracting extraction transformed transform transforming loaded load loading tested test testing trained train training learned learn learning
+resolved resolve solving solved solve problem problems solution solutions strategy strategic planning planned plan plans
+clear clearly concise strong stronger strongest effective effectively efficient efficiently accurate accuracy reliable quality high higher low lower best better good great
+key main major minor new old first second third final initial current recent previous latest additional multiple various several different
+skills skill skilled knowledge knowledgeable ability abilities capable proficient proficiency expert expertise familiar familiarity practical hands-on hands on
+technical non-technical nontechnical non technical stakeholders stakeholder audience audiences client clients customer customers user users team teams
+findings finding insights insight meaningful actionable data database databases dataset datasets information report reports reporting dashboard dashboards
+metrics metric kpi kpis trends trend patterns pattern statistics statistical statistic modeling modelling model models predict prediction predictions predictive
+forecast forecasting classification regression clustering learning machine deep neural network networks algorithm algorithms
+python java javascript typescript sql mysql postgresql postgres sqlite mongodb nosql excel powerbi power bi tableau looker pandas numpy scipy scikit sklearn matplotlib seaborn plotly
+tensorflow keras pytorch jupyter notebook notebooks colab git github gitlab linux docker aws azure gcp cloud api apis rest html css react node django flask streamlit fastapi
+etl eda ci cd sdlc agile scrum jira figma canva photoshop illustrator word powerpoint office google sheets docs
+queries query queried scripts script scripting code coding programming program programs software application applications app apps web website websites tool tools
+framework frameworks library libraries package packages module modules function functions class classes object objects
+project projects internship internships intern interns virtual simulation job jobs role roles position positions task tasks assignment assignments
+credit card cards delinquency delinquent prediction risk risks factors factor customer banking bank finance financial fintech loan loans payment payments default defaults
+business businesses market marketing sales revenue profit cost costs budget budgets growth performance kpi operations operational process
+tata iq deloitte accenture jpmorgan morgan genpact forage bcg mckinsey kpmg pwc ey infosys wipro tcs cognizant amazon microsoft goldman sachs walmart mastercard visa
+university college school institute academy education degree bachelor bachelors master masters diploma certificate certification certifications certified course courses
+bca mca btech mtech mba bba bcom bsc msc computer science engineering technology applications
+achievement achievements award awards recognized recognition rank ranked winner participated participation volunteer volunteering leadership
+student students academic academics research thesis capstone paper papers publication publications
+english hindi language languages fluent native
+insights analysis analyses dashboards spreadsheet spreadsheets pivot tables table charts chart graph graphs plots plot
+present presented findings non-technical nontechnical decision decisions making making support evidence-based evidence based driven
+time management problem-solving critical thinking creative creativity teamwork adaptable adaptability detail detailed oriented organized
+end to end endtoend across cross functional crossfunctional real world realworld life lifecycle
+online offline live real world large small big scale scalable large-scale
+percent percentage number numbers total average mean median
+month months year years week weeks day days hour hours
+improve improves improved help helps helped helping enable enables enabled ensure ensured ensuring provide provided providing
+include includes included including contain contains contained containing use uses used usage utilize utilized utilizing
+gain gained gaining obtain obtained obtaining understand understood understanding demonstrate demonstrated demonstrating
+handle handled handling review reviewed reviewing validate validated validating validation document documented documenting documentation
+integrate integrated integrating integration deploy deployed deploying deployment monitor monitored monitoring track tracked tracking
+compare compared comparing comparison summarize summarized summarizing summary highlight highlighted highlighting recommend recommended recommendation recommendations
+""".lower().replace("-", " ").split())
+_REPORT_VOCAB = {w for w in _REPORT_VOCAB if len(w) >= 2 and (len(w) > 2 or w in {
+    "an","as","at","be","by","do","go","he","if","in","is","it","me","my","no","of","on","or","so","to","up","us","we","ai","ml","bi","iq","ci","cd","ey"})}
+_REPORT_VOCAB.update({"a", "i"})
+_REPORT_STOPWORDS = {
+    "and","or","of","to","in","for","with","on","from","the","a","an","as","at","by","into","using","across","through","over","under","is","are","was","were","be","that","this","than","then","via","per"
+}
+
+
+def _report_known_word(word):
+    """True for vocabulary words and simple inflections (plural / -ed / -ing / -ly)."""
+    w = word.lower()
+    if w in _REPORT_VOCAB:
+        return True
+    for suffix, stems in (("s", ("",)), ("es", ("",)), ("ed", ("", "e")), ("d", ("",)), ("ing", ("", "e")), ("ly", ("",)), ("er", ("", "e")), ("ers", ("", "e"))):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            base = w[:-len(suffix)]
+            if any((base + add) in _REPORT_VOCAB for add in stems):
+                return True
+    return False
+
+
+def _report_split_glued_word(token):
+    """Split a run of letters that was glued together by PDF extraction.
+
+    A split is only returned when the *whole* run can be covered by known words,
+    so unknown names/terms are never chopped up.  Returns None when unsure.
+    """
+    n = len(token)
+    low = token.lower()
+    # A case change inside the run (lower -> UPPER) is a strong hint of glued words.
+    has_case_break = bool(re.search(r"[a-z][A-Z]", token)) or bool(re.search(r"[A-Z]{2,}[a-z]", token))
+    INF = 10 ** 6
+    best = [INF] * (n + 1)
+    prev = [-1] * (n + 1)
+    best[0] = 0
+    for i in range(1, n + 1):
+        for j in range(max(0, i - 24), i):
+            if best[j] >= INF:
+                continue
+            part = low[j:i]
+            if len(part) == 1 and part not in ("a", "i"):
+                continue
+            if not _report_known_word(part):
+                continue
+            # prefer few, long words; discourage 1-2 letter fragments
+            cost = best[j] + 4 + (3 if len(part) == 1 else 1 if len(part) == 2 else 0) - min(len(part), 12) * 0.05
+            if cost < best[i]:
+                best[i] = cost
+                prev[i] = j
+    if best[n] >= INF:
+        return None
+    pieces = []
+    i = n
+    while i > 0:
+        j = prev[i]
+        pieces.append(token[j:i])
+        i = j
+    pieces.reverse()
+    if len(pieces) < 2:
+        return None
+    if not has_case_break and n < 12 and not any(p.lower() in _REPORT_STOPWORDS for p in pieces):
+        return None  # short, un-cased run without a joining word: leave untouched
+    return pieces
+
+
 def _report_clean_text(value):
-    """Clean PDF-extracted spacing artifacts without changing the underlying wording."""
-    text = _safe_pdf_text(value or "")
-    # Repair common PDF/Word extraction artifacts such as:
-    # "AppliedSQLqueriesand Pythonscriptstoextract" -> readable text.
-    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
-    text = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", text)
-    text = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", text)
-    text = re.sub(r"([a-z]{2,})(?=(and|or|to|for|with|from|using|on|in|of|the|a|an)\b)", r"\1 ", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    """Repair PDF-extraction spacing artifacts for the report, keeping the wording.
+
+    e.g. "AppliedSQLqueriesand Pythonscriptstoextract" -> "Applied SQL queries and Python scripts to extract".
+    """
+    text = str(value or "")
+    text = re.sub(r"[\u200b\u00ad\ufeff]", "", text)
+    # space after punctuation that was glued to the next word: "pandas,NumPy" -> "pandas, NumPy"
+    text = re.sub(r"([,;:|])(?=[A-Za-z])", r"\1 ", text)
+    text = re.sub(r"(?<=[A-Za-z])\|", " |", text)
+    # "non- technical" -> "non-technical"
+    text = re.sub(r"(?<=[A-Za-z])- (?=[a-z])", "-", text)
+    out = []
+    for raw in text.split():
+        if "@" in raw or "://" in raw or raw.lower().startswith("www."):
+            out.append(raw)
+            continue
+
+        def fix_run(match):
+            run = match.group(0)
+            if len(run) < 4 or run.isupper() or _report_known_word(run):
+                return run
+            pieces = _report_split_glued_word(run)
+            return " ".join(pieces) if pieces else run
+
+        out.append(re.sub(r"[A-Za-z]+", fix_run, raw))
+    text = " ".join(out)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    return text.strip()
 
 
 def generate_analysis_report(data):
@@ -2564,9 +2985,11 @@ def generate_analysis_report(data):
     bullets=data.get("bullets",[]) or []; bs=data.get("bullet_suggestions",[]) or []
     if bullets:
         ex=[["Original resume bullet","Suggested direction"]]
+        # Normal word-wrapping (breaks only at spaces) so words never get chopped or glued.
+        ex_cell=ParagraphStyle("ExampleCellV5",fontName="Helvetica",fontSize=8.6,leading=12.2,textColor=colors.HexColor("#344054"),splitLongWords=1)
         for i,b in enumerate(bullets[:5]):
             x=bs[i] if i<len(bs) else ""; x=x.get("Suggested") or x.get("suggested") or x.get("Improved") or "" if isinstance(x,dict) else str(x)
-            ex.append([_report_clean_text(b),_report_clean_text(x) or "Strengthen with action + task + evidence."])
+            ex.append([Paragraph(_safe_pdf_text(_report_clean_text(b)) or " ",ex_cell),Paragraph(_safe_pdf_text(_report_clean_text(x) or "Strengthen with action + task + evidence.") or " ",ex_cell)])
         # Give content-level examples more breathing room so extracted text
         # never appears visually glued together in the final report.
         ex_table = _report_table(ex,[3.20*inch,3.65*inch])
@@ -2879,9 +3302,9 @@ def _generator_summary(resume_skills, role, field, education=None, source_summar
         focus="coordination, documentation, communication, and people-focused operational support"
     else:
         focus="practical projects, structured problem solving, communication, and continuous learning"
-    opening=("Student and aspiring " if is_student else "Candidate targeting ")
+    opening=_education_opening(edu)
     return (f"{opening}{role} with hands-on exposure to {skill_text}. "
-            f"Focused on {focus} and applying verified skills from the uploaded resume to practical work. "
+            f"Focused on {focus}, with a practical, project-driven approach to problem solving. "
             f"Seeking a {role} opportunity to contribute effectively and continue developing professionally.")
 
 
@@ -3067,7 +3490,11 @@ def generate_resume_pdf(resume,template_name,variant=None):
     elif template_name in {"Creative Modern","Creative Portfolio","Creative Studio","Portfolio Accent","Editorial Luxe"}: add_section("Professional Summary",sec["Summary"],False);add_skills("Skills & Tools");add_section("Projects",sec["Projects"]);add_section("Experience",sec["Experience"]);add_section("Education",sec["Education"],False);add_section("Certifications",sec["Certifications"],False);add_section("Achievements",sec["Achievements"])
     else:
         add_section("Professional Summary",sec["Summary"],False)
-        for t in resume.get("section_order",["Skills","Experience","Projects","Education","Certifications","Achievements"]): add_skills("Skills & Tools") if t=="Skills" else add_section(t,sec[t]) if t in sec else None
+        for t in resume.get("section_order",["Skills","Experience","Projects","Education","Certifications","Achievements"]):
+            # The summary is already rendered above as "Professional Summary";
+            # skip it here so it never appears a second time as "Summary".
+            if t=="Summary": continue
+            add_skills("Skills & Tools") if t=="Skills" else add_section(t,sec[t]) if t in sec else None
     # Let Platypus flow naturally to a second page when the source resume is content-heavy.
     # This avoids tiny text and preserves every verified section instead of shrinking the page.
 
@@ -3398,7 +3825,7 @@ if analyze_button:
             )
 
             candidate_name = extract_candidate_name(resume_text)
-            improved_summary = generate_summary(resume_skills, detected_role, detected_field)
+            improved_summary = generate_summary(resume_skills, detected_role, detected_field, resume_text=resume_text)
 
             recommendations = (
                 generate_recommendations(
@@ -3629,21 +4056,111 @@ if "analysis" in st.session_state:
     # Lightweight HTML/CSS chart instead of matplotlib canvas.
     # This avoids the stray ``canvascanvas`` text artifact in Streamlit while
     # keeping the ATS breakdown visual, crisp and theme-friendly.
+    ats_maximums = {
+        "Technical Skills": 25,
+        "JD Match": 25,
+        "Resume Sections": 20,
+        "Contact": 10,
+        "Projects / Experience": 10,
+        "Achievements": 10,
+    }
+    ats_descriptions = {
+        "Technical Skills": "Relevant technical skills found in your resume",
+        "JD Match": "Job-description skills that your resume also contains",
+        "Resume Sections": "Key resume sections detected (Summary, Education, Skills, Projects...)",
+        "Contact": "Email, phone, LinkedIn and GitHub availability",
+        "Projects / Experience": "Projects (5 pts) and Experience (5 pts) present",
+        "Achievements": "Achievement / measurable-impact signals (2 pts each)",
+    }
+    # JD Match is only counted when a job description with detectable skills was given.
+    jd_applicable = bool(data.get("jd_skills"))
+
+    def _ats_level(percent):
+        if percent >= 80:
+            return "🟢 Strong"
+        if percent >= 60:
+            return "🟡 Good"
+        if percent >= 40:
+            return "🟠 Needs work"
+        return "🔴 Weak"
+
+    # Every category is shown in a fixed order and measured against its own
+    # maximum, so "21/25" reads the same way for every row.
+    ats_order = list(ats_maximums.keys())
+    ordered_rows = sorted(
+        breakdown_rows,
+        key=lambda item: ats_order.index(item[0]) if item[0] in ats_order else len(ats_order)
+    )
+
+    st.caption("Each bar shows the points you earned out of the maximum points for that category (for example 21/25).")
+
     chart_rows = []
-    chart_sorted = sorted(breakdown_rows, key=lambda item: item[1], reverse=True)
-    chart_max = max(30, max((score for _, score in chart_sorted), default=0) + 5)
-    for label, score in chart_sorted:
-        pct = max(0, min(100, (score / chart_max) * 100))
+    for label, score in ordered_rows:
+        max_pts = ats_maximums.get(label, max(1, score))
+        if label == "JD Match" and not jd_applicable:
+            pct = 0
+            value_text = "N/A"
+        else:
+            pct = max(0, min(100, (score / max_pts) * 100))
+            value_text = f"{int(round(score))}/{int(max_pts)}"
         chart_rows.append(f"""
         <div class=\"ats-chart-row\">
           <div class=\"ats-chart-label\">{label}</div>
           <div class=\"ats-chart-track\"><div class=\"ats-chart-fill\" style=\"width:{pct:.1f}%\"></div></div>
-          <div class=\"ats-chart-value\">{int(round(score))}</div>
+          <div class=\"ats-chart-value\">{value_text}</div>
         </div>""")
     st.markdown(
         '<div class=\"ats-chart\">' + ''.join(chart_rows) + '</div>',
         unsafe_allow_html=True
     )
+
+    # -----------------------------------------------------
+    # Score comparison table: earned vs maximum, per category
+    # -----------------------------------------------------
+    st.subheader("🧮 Score Comparison — Points Earned vs Maximum", anchor=False)
+
+    comparison_rows = []
+    total_earned = 0
+    total_max = 0
+    for label, score in ordered_rows:
+        max_pts = ats_maximums.get(label, max(1, score))
+        description = ats_descriptions.get(label, "")
+        if label == "JD Match" and not jd_applicable:
+            comparison_rows.append((label, description, "Not counted (no JD)", "—", "N/A"))
+            continue
+        percent = int(round((score / max_pts) * 100)) if max_pts else 0
+        total_earned += int(round(score))
+        total_max += int(max_pts)
+        comparison_rows.append((
+            label,
+            description,
+            _ats_level(percent),
+            f"{percent}%",
+            f"{int(round(score))} / {int(max_pts)}",
+        ))
+
+    if total_max:
+        total_percent = int(round((total_earned / total_max) * 100))
+        comparison_rows.append((
+            "TOTAL",
+            "All counted categories combined",
+            _ats_level(total_percent),
+            f"{total_percent}%",
+            f"{total_earned} / {total_max}",
+        ))
+        render_analysis_table(
+            ["Category", "What it checks", "Status", "Percent", "Score (out of max)"],
+            comparison_rows,
+            numeric_last=True,
+        )
+        if jd_applicable:
+            st.caption(f"Final ATS Score: **{int(data.get('ats_score', 0))}/100** — the total of all six categories.")
+        else:
+            st.caption(
+                f"No job description with detectable skills was provided, so **JD Match (25 points) is not counted**. "
+                f"Your points are out of {total_max} and scaled to 100: "
+                f"{total_earned} ÷ {total_max} × 100 → Final ATS Score **{int(data.get('ats_score', 0))}/100**."
+            )
 
 
 
@@ -3909,7 +4426,7 @@ if "analysis" in st.session_state:
         "📝 Improved Professional Summary"
     , anchor=False)
 
-    summary_value = (data.get("improved_summary") or "").strip() or generate_summary(data.get("resume_skills", []), data.get("detected_role", "Data Analyst"), data.get("detected_field", "Data / Analytics"))
+    summary_value = (data.get("improved_summary") or "").strip() or generate_summary(data.get("resume_skills", []), data.get("detected_role", "Data Analyst"), data.get("detected_field", "Data / Analytics"), resume_text=data.get("resume_text", ""))
     st.markdown(
         f"<div class=\"summary-preview-card\">{_safe_pdf_text(summary_value)}</div>",
         unsafe_allow_html=True
